@@ -4,10 +4,12 @@
 #include "misc.h"
 #include "sched_alarm.h"
 
+#include "oscompat.h"
 #include <limits.h>
-#include <unistd.h>
-#include <signal.h>
 #include <stdlib.h>
+#ifndef _WIN32
+#include <signal.h>
+#endif
 
 typedef struct _alarm_event {
     int remaining;
@@ -22,6 +24,7 @@ static LIST_ELEMENT* g_alarm_list_add_temp = NULL;
 static int g_last_id = 0;
 static int g_ringing = 0;
 static int g_last_set_time = 0;
+static unsigned long g_alarm_anchor_ms = 0;
 
 #ifdef DEBUG
 static void print_list(LIST_ELEMENT** list) {
@@ -44,8 +47,13 @@ static void print_list(LIST_ELEMENT** list) {
 #endif
 
 static void set_alarm(int time) {
+#ifdef _WIN32
+    g_last_set_time = time;
+    g_alarm_anchor_ms = (time <= 0 || time == INT_MAX) ? 0 : GetTickCount();
+#else
     alarm(time);
     g_last_set_time = time;
+#endif
 }
 
 static int find_min_remaining(LIST_ELEMENT* list) {
@@ -115,14 +123,30 @@ void alarm_sig_handler(int sig) {
 }
 
 RESULT sched_alarm_init() {
+#ifdef _WIN32
+    return SUCCESS;
+#else
     signal(SIGALRM, alarm_sig_handler);
     return SUCCESS;
+#endif
 }
 
 void sched_alarm_destroy() {
-    list_destroy(&g_alarm_list, TRUE);
+#ifdef _WIN32
+    g_alarm_anchor_ms = 0;
+#else
     alarm(0);
+#endif
+    list_destroy(&g_alarm_list, TRUE);
 }
+
+#ifdef _WIN32
+void sched_alarm_poll(void) {
+    if (g_alarm_anchor_ms == 0 || g_last_set_time <= 0) return;
+    if ((GetTickCount() - g_alarm_anchor_ms) / 1000u >= (DWORD)g_last_set_time)
+        alarm_sig_handler(0);
+}
+#endif
 
 static void alarm_mark_as_delete_single(void* alarm_event, void* id) {
     if (EVENT->id == *(int*)id) {
@@ -173,6 +197,24 @@ int schedule_alarm(int secs, void (*func)(void*), void* user) {
         print_list(&g_alarm_list_add_temp);
 #endif
     } else {
+#ifdef _WIN32
+        if (g_alarm_anchor_ms != 0 && g_last_set_time > 0) {
+            DWORD elapsed = (GetTickCount() - g_alarm_anchor_ms) / 1000u;
+            if (elapsed >= (DWORD)g_last_set_time)
+                sched_alarm_poll();
+        }
+        int _curr_remaining;
+        if (g_alarm_anchor_ms == 0 || g_last_set_time <= 0) {
+            _curr_remaining = INT_MAX;
+        } else {
+            DWORD elapsed = (GetTickCount() - g_alarm_anchor_ms) / 1000u;
+            _curr_remaining = (elapsed >= (DWORD)g_last_set_time)
+                ? 0 : (g_last_set_time - (int)elapsed);
+        }
+        if (_curr_remaining == 0) _curr_remaining = INT_MAX;
+        set_alarm(_curr_remaining < secs ? _curr_remaining : secs);
+        insert_data(&g_alarm_list, _event);
+#else
         /* Not ringing. Time to next alarm should be obtained by alarm(0) */
         int _curr_remaining = alarm(0);
         /* When there is no alarm set, alarm(0) would be 0. Fix to INT_MAX for comparsion */
@@ -180,6 +222,7 @@ int schedule_alarm(int secs, void (*func)(void*), void* user) {
         /* Reset since we stopped the alarm half way. */
         set_alarm(_curr_remaining < secs ? _curr_remaining : secs);
         insert_data(&g_alarm_list, _event);
+#endif
 #ifdef DEBUG
         PR_DBG("New alarm event added");
         print_list(&g_alarm_list);

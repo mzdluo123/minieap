@@ -12,8 +12,7 @@
 #include "conf_parser.h"
 #include "packet_util.h"
 
-#include <arpa/inet.h>
-#include <getopt.h>
+#include "oscompat.h"
 #include <stdio.h>
 #include <stdlib.h>
 

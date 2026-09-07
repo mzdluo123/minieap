@@ -14,7 +14,9 @@ typedef enum _function_result {
 #define MAX_LINE_LEN 100
 
 /* Max path length */
+#ifndef MAX_PATH
 #define MAX_PATH 260
+#endif
 
 #define TRUE 1
 #define FALSE 0

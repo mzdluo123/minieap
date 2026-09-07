@@ -26,4 +26,8 @@ void unschedule_alarm(int id);
  */
 RESULT sched_alarm_init();
 void sched_alarm_destroy();
+
+#ifdef _WIN32
+void sched_alarm_poll(void);
+#endif
 #endif

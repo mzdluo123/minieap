@@ -22,11 +22,7 @@
 
 #define FRAME_BUF_SIZE 1512
 
-#ifdef __linux__
-#define IF_IMPL_INIT(func) __define_in_section(func, ".ifimplinit")
-#else
-#define IF_IMPL_INIT(func) __define_in_section(func, "__DATA,__ifimplinit")
-#endif
+#define IF_IMPL_INIT(func)
 
 /*
  * Representing an interface driver plugin.
@@ -146,4 +142,8 @@ IF_IMPL* get_if_impl();
  * Free everything!
  */
 void free_if_impl();
+/*
+ * Print libpcap/Npcap device names (no-op if libpcap if_impl is not built).
+ */
+void if_impl_print_pcap_devices(void);
 #endif

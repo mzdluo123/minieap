@@ -9,22 +9,25 @@ static IF_IMPL* g_selected_impl;
 
 IF_IMPL* sockraw_new();
 IF_IMPL* libpcap_new();
+IF_IMPL* bpf_new();
 
 int init_if_impl_list() {
-#ifdef __linux__
-    extern IF_IMPL* (*__IF_IMPL_LIST_START__)();
-    extern IF_IMPL* (*__IF_IMPL_LIST_END__)(); // They are just location markers, do not care about their content
-#else
-    extern IF_IMPL* (*__IF_IMPL_LIST_START__)() __asm("section$start$__DATA$__ifimplinit");
-    extern IF_IMPL* (*__IF_IMPL_LIST_END__)() __asm("section$end$__DATA$__ifimplinit");
-#endif
-    IF_IMPL* (**func)();
     int i = 0;
-    for (func = &__IF_IMPL_LIST_START__; func < &__IF_IMPL_LIST_END__; ++i, ++func) {
-        insert_data(&g_if_impl_list, (*func)());
-    }
+#ifdef HAS_IF_IMPL_SOCKRAW
+    insert_data(&g_if_impl_list, sockraw_new()); ++i;
+#endif
+#ifdef HAS_IF_IMPL_LIBPCAP
+    insert_data(&g_if_impl_list, libpcap_new()); ++i;
+#endif
+#ifdef HAS_IF_IMPL_BPF
+    insert_data(&g_if_impl_list, bpf_new()); ++i;
+#endif
     return i;
 }
+
+#ifndef HAS_IF_IMPL_LIBPCAP
+void if_impl_print_pcap_devices(void) {}
+#endif
 
 void print_if_impl_single(void* vimpl, void* unused) {
 #define IMPL ((IF_IMPL*)vimpl)

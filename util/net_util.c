@@ -3,6 +3,14 @@
 #include "misc.h"
 #include "minieap_common.h"
 
+#ifdef _WIN32
+#include "oscompat.h"
+#include "if_impl.h"
+#include <iphlpapi.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#else
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
@@ -27,6 +35,7 @@
 #include <sys/sysctl.h>
 #include <netinet/in.h>
 #endif
+#endif
 
 static int ip_addr_family_cmpfunc(void* family, void* ip_addr) {
     if (*(short*)family == ((IP_ADDR*)ip_addr)->family) {
@@ -39,6 +48,204 @@ IP_ADDR* find_ip_with_family(LIST_ELEMENT* list, short family) {
     return (IP_ADDR*)lookup_data(list, &family, ip_addr_family_cmpfunc);
 }
 
+#ifdef _WIN32
+static char* win_utf8_from_wide(const WCHAR* w) {
+    int n;
+    char* s;
+    if (!w) return NULL;
+    n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+    if (n <= 0) return NULL;
+    s = (char*)malloc((size_t)n);
+    if (!s) return NULL;
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL);
+    return s;
+}
+
+static int win_iface_match(const char* user, const IP_ADAPTER_ADDRESSES* a) {
+    char npf[512];
+    char* utf8;
+    if (!user || !user[0] || !a) return 0;
+    if (a->AdapterName && _stricmp(user, a->AdapterName) == 0) return 1;
+    if (a->AdapterName) {
+        snprintf(npf, sizeof(npf), "\\Device\\NPF_%s", a->AdapterName);
+        if (_stricmp(user, npf) == 0) return 1;
+        snprintf(npf, sizeof(npf), "\\\\Device\\\\NPF_%s", a->AdapterName);
+        if (_stricmp(user, npf) == 0) return 1;
+    }
+    utf8 = win_utf8_from_wide(a->FriendlyName);
+    if (utf8) {
+        int m = _stricmp(user, utf8) == 0;
+        free(utf8);
+        if (m) return 1;
+    }
+    utf8 = win_utf8_from_wide(a->Description);
+    if (utf8) {
+        int m = _stricmp(user, utf8) == 0;
+        free(utf8);
+        if (m) return 1;
+    }
+    return 0;
+}
+
+static IP_ADAPTER_ADDRESSES* win_get_adapters(void) {
+    ULONG len = 0;
+    IP_ADAPTER_ADDRESSES* buf;
+    ULONG r = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_GATEWAYS, NULL, NULL, &len);
+    if (r != ERROR_BUFFER_OVERFLOW) {
+        PR_ERR("GetAdaptersAddresses 失败 (%lu)", r);
+        return NULL;
+    }
+    buf = (IP_ADAPTER_ADDRESSES*)malloc(len);
+    if (!buf) return NULL;
+    r = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_GATEWAYS, NULL, buf, &len);
+    if (r != NO_ERROR) {
+        PR_ERR("GetAdaptersAddresses 失败 (%lu)", r);
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
+
+static const IP_ADAPTER_ADDRESSES* win_find_adapter(IP_ADAPTER_ADDRESSES* head, const char* ifname) {
+    const IP_ADAPTER_ADDRESSES* a;
+    for (a = head; a; a = a->Next) {
+        if (win_iface_match(ifname, a)) return a;
+    }
+    return NULL;
+}
+
+static void win_prefix_to_mask(int family, UINT8 prefix, uint8_t* mask) {
+    if (family == AF_INET) {
+        uint32_t m = (prefix == 0) ? 0 : htonl(0xFFFFFFFFu << (32 - prefix));
+        memcpy(mask, &m, 4);
+    } else {
+        int i;
+        memset(mask, 0, 16);
+        for (i = 0; i < prefix / 8 && i < 16; i++) mask[i] = 0xFF;
+        if ((prefix % 8) && (prefix / 8) < 16)
+            mask[prefix / 8] = (uint8_t)(0xFFu << (8 - (prefix % 8)));
+    }
+}
+
+static RESULT win_dns_from_params(LIST_ELEMENT** list) {
+    ULONG len = 0;
+    FIXED_INFO* info;
+    IP_ADDR_STRING* p;
+    DWORD r = GetNetworkParams(NULL, &len);
+    if (r != ERROR_BUFFER_OVERFLOW) {
+        return FAILURE;
+    }
+    info = (FIXED_INFO*)malloc(len);
+    if (!info) return FAILURE;
+    r = GetNetworkParams(info, &len);
+    if (r != ERROR_SUCCESS) {
+        free(info);
+        return FAILURE;
+    }
+    for (p = &info->DnsServerList; p; p = p->Next) {
+        if (p->IpAddress.String[0])
+            insert_data(list, strdup(p->IpAddress.String));
+    }
+    free(info);
+    return SUCCESS;
+}
+
+RESULT obtain_iface_mac(const char* ifname, uint8_t* adr_buf) {
+    IP_ADAPTER_ADDRESSES* head = win_get_adapters();
+    const IP_ADAPTER_ADDRESSES* a;
+    if (!head) return FAILURE;
+    a = win_find_adapter(head, ifname);
+    if (!a) {
+        PR_ERR("找不到网卡 %s", ifname);
+        free(head);
+        return FAILURE;
+    }
+    if (a->PhysicalAddressLength >= 6)
+        memcpy(adr_buf, a->PhysicalAddress, 6);
+    else
+        memset(adr_buf, 0, 6);
+    free(head);
+    return SUCCESS;
+}
+
+RESULT obtain_iface_ip_mask(const char* ifname, LIST_ELEMENT** list) {
+    IP_ADAPTER_ADDRESSES* head = win_get_adapters();
+    const IP_ADAPTER_ADDRESSES* a;
+    IP_ADAPTER_UNICAST_ADDRESS* ua;
+    if (!head) return FAILURE;
+    a = win_find_adapter(head, ifname);
+    if (!a) {
+        PR_ERR("找不到网卡 %s", ifname);
+        free(head);
+        return FAILURE;
+    }
+    for (ua = a->FirstUnicastAddress; ua; ua = ua->Next) {
+        IP_ADDR* addr;
+        struct sockaddr* sa;
+        if (!ua->Address.lpSockaddr) continue;
+        sa = ua->Address.lpSockaddr;
+        if (sa->sa_family != AF_INET && sa->sa_family != AF_INET6) continue;
+        addr = (IP_ADDR*)malloc(sizeof(IP_ADDR));
+        if (!addr) continue;
+        memset(addr, 0, sizeof(IP_ADDR));
+        addr->family = sa->sa_family;
+        if (sa->sa_family == AF_INET) {
+            memcpy(addr->ip, &((struct sockaddr_in*)sa)->sin_addr, 4);
+            win_prefix_to_mask(AF_INET, ua->OnLinkPrefixLength, addr->mask);
+        } else {
+            memcpy(addr->ip, &((struct sockaddr_in6*)sa)->sin6_addr, 16);
+            win_prefix_to_mask(AF_INET6, ua->OnLinkPrefixLength, addr->mask);
+        }
+        insert_data(list, addr);
+    }
+    free(head);
+    return SUCCESS;
+}
+
+void free_ip_list(LIST_ELEMENT** list) {
+    list_destroy(list, TRUE);
+}
+
+RESULT obtain_dns_list(LIST_ELEMENT** list) {
+    char ifname[IFNAMSIZ] = {0};
+    IP_ADAPTER_ADDRESSES* head;
+    const IP_ADAPTER_ADDRESSES* a = NULL;
+    IF_IMPL* impl = get_if_impl();
+    int got_adapter_dns = 0;
+
+    if (impl && impl->get_ifname)
+        impl->get_ifname(impl, ifname, IFNAMSIZ);
+
+    head = win_get_adapters();
+    if (head && ifname[0])
+        a = win_find_adapter(head, ifname);
+    if (a) {
+        IP_ADAPTER_DNS_SERVER_ADDRESS* d;
+        for (d = a->FirstDnsServerAddress; d; d = d->Next) {
+            char tmp[INET6_ADDRSTRLEN];
+            struct sockaddr* sa = d->Address.lpSockaddr;
+            const void* src;
+            if (!sa) continue;
+            if (sa->sa_family == AF_INET)
+                src = &((struct sockaddr_in*)sa)->sin_addr;
+            else if (sa->sa_family == AF_INET6)
+                src = &((struct sockaddr_in6*)sa)->sin6_addr;
+            else
+                continue;
+            if (!inet_ntop(sa->sa_family, src, tmp, sizeof(tmp))) continue;
+            insert_data(list, strdup(tmp));
+            got_adapter_dns = 1;
+        }
+    }
+    if (head) free(head);
+    if (got_adapter_dns) return SUCCESS;
+    if (IS_FAIL(win_dns_from_params(list))) {
+        PR_ERR("无法获取 DNS 信息");
+        return FAILURE;
+    }
+    return SUCCESS;
+}
+#else
 RESULT obtain_iface_mac(const char* ifname, uint8_t* adr_buf) {
     struct ifaddrs *ifaddrs, *if_curr;
     if (getifaddrs(&ifaddrs) < 0) {
@@ -128,12 +335,45 @@ RESULT obtain_dns_list(LIST_ELEMENT** list) {
     fclose(_fp);
     return SUCCESS;
 }
+#endif
 
 void free_dns_list(LIST_ELEMENT** list) {
     list_destroy(list, TRUE);
 }
 
-#ifdef __linux__
+#ifdef _WIN32
+RESULT obtain_iface_ipv4_gateway(const char* ifname, uint8_t* buf) {
+    IP_ADAPTER_ADDRESSES* head = win_get_adapters();
+    const IP_ADAPTER_ADDRESSES* a;
+    IP_ADAPTER_GATEWAY_ADDRESS* g;
+    if (!head) return FAILURE;
+    a = win_find_adapter(head, ifname);
+    if (!a) {
+        PR_ERR("找不到网卡 %s", ifname);
+        free(head);
+        return FAILURE;
+    }
+    for (g = a->FirstGatewayAddress; g; g = g->Next) {
+        struct sockaddr* sa = g->Address.lpSockaddr;
+        if (sa && sa->sa_family == AF_INET) {
+            memcpy(buf, &((struct sockaddr_in*)sa)->sin_addr, 4);
+            free(head);
+            return SUCCESS;
+        }
+    }
+    {
+        MIB_IPFORWARDROW row;
+        memset(&row, 0, sizeof(row));
+        if (GetBestRoute(0, a->IfIndex, &row) == NO_ERROR) {
+            memcpy(buf, &row.dwForwardNextHop, 4);
+            free(head);
+            return SUCCESS;
+        }
+    }
+    free(head);
+    return FAILURE;
+}
+#elif defined(__linux__)
 /* http://stackoverflow.com/a/3288983/5701966 */
 #define NL_BUFSIZE 8192
 static int read_from_netlink_socket(int sockfd, uint8_t *buf, int seq, int pid) {

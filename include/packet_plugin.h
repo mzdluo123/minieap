@@ -19,11 +19,7 @@
 #include "eth_frame.h"
 #include "module_init.h"
 
-#ifdef __linux__
-#define PACKET_PLUGIN_INIT(func) __define_in_section(func, ".pktplugininit")
-#else
-#define PACKET_PLUGIN_INIT(func) __define_in_section(func, "__DATA,__pktplugininit")
-#endif
+#define PACKET_PLUGIN_INIT(func)
 
 typedef struct _packet_plugin {
     /*

@@ -5,7 +5,7 @@
 #include "linkedlist.h"
 #include "if_impl.h"
 
-#include <net/if.h>
+#include "oscompat.h"
 
 #define USERNAME_MAX_LEN 64
 #define PASSWORD_MAX_LEN 64
@@ -83,6 +83,15 @@ typedef struct _prog_config {
      */
     char* logfile;
     #define DEFAULT_LOGFILE "/var/log/minieap.log"
+
+#ifdef _WIN32
+#undef DEFAULT_PIDFILE
+#define DEFAULT_PIDFILE "minieap.pid"
+#undef DEFAULT_CONFFILE
+#define DEFAULT_CONFFILE "minieap.conf"
+#undef DEFAULT_LOGFILE
+#define DEFAULT_LOGFILE "minieap.log"
+#endif
 
     /*
      * Selected interface implementation: how to drive network adapters?

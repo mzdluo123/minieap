@@ -7,7 +7,7 @@
  * See include/packet_builder.h for details.
  */
 #include <stdlib.h>
-#include <arpa/inet.h>
+#include "oscompat.h"
 
 #include "packet_builder.h"
 #include "eth_frame.h"

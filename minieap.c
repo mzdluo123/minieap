@@ -11,13 +11,14 @@
 
 #include <stdlib.h>
 #include <errno.h>
-#include <arpa/inet.h>
+#include "oscompat.h"
 #include <signal.h>
+#include <stdio.h>
 #include <time.h>
 
 #ifdef __linux__
 #include <linux/if_ether.h>
-#else
+#elif !defined(ETH_P_PAE)
 #define ETH_P_PAE 0x888e
 #endif
 
@@ -164,7 +165,7 @@ static void apply_log_daemon_params() {
     start_log();
 }
 
-static void exit_handler() {
+static void exit_handler(void) {
     free_if_impl();
     packet_plugin_destroy();
     eap_state_machine_destroy();
@@ -173,21 +174,49 @@ static void exit_handler() {
     free_config();
     PR_INFO("MiniEAP 已退出");
     close_log();
+#ifdef _WIN32
+    WSACleanup();
+#endif
 }
 
+#ifdef _WIN32
+static BOOL WINAPI console_ctrl_handler(DWORD ctrl) {
+    switch (ctrl) {
+        case CTRL_C_EVENT:
+        case CTRL_CLOSE_EVENT:
+        case CTRL_BREAK_EVENT:
+            exit(0);
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+#else
 static void signal_handler(int signal) {
     exit(0);
 }
+#endif
 
 /*
  * Detailed errors are printed where they happen, not here ...
  */
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        fprintf(stderr, "WSAStartup failed\n");
+        return FAILURE;
+    }
+#endif
     srand(time(0));
     atexit(exit_handler);
-	signal(SIGHUP, signal_handler);
-	signal(SIGINT, signal_handler);
-	signal(SIGTERM, signal_handler);
+#ifdef _WIN32
+    SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+#else
+    signal(SIGHUP, signal_handler);
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+#endif
 
     if (IS_FAIL(init_cfg(argc, argv))) {
         return FAILURE;

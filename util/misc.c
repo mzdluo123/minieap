@@ -2,9 +2,7 @@
 #include <ctype.h>
 #include <stdint.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <getopt.h>
+#include "oscompat.h"
 
 #include "linkedlist.h"
 #include "logging.h"
@@ -119,6 +117,10 @@ void pr_info_gbk(char* in, size_t inlen) {
 }
 
 RESULT go_background() {
+#ifdef _WIN32
+    FreeConsole();
+    return SUCCESS;
+#else
     pid_t pid;
 
     pid = fork();
@@ -130,6 +132,7 @@ RESULT go_background() {
    if (setsid() < 0)
       return FAILURE;
    return SUCCESS;
+#endif
 }
 
 char** strarraydup(int count, char* array[]) {
@@ -182,3 +185,16 @@ void* memdup(const void* src, int n) {
     memmove(ret, src, n);
     return ret;
 }
+
+#ifndef HAVE_STRNDUP
+#if defined(_MSC_VER)
+char* strndup(const char* s, size_t n) {
+    size_t len = strnlen(s, n);
+    char* p = (char*)malloc(len + 1);
+    if (!p) return NULL;
+    memcpy(p, s, len);
+    p[len] = 0;
+    return p;
+}
+#endif
+#endif

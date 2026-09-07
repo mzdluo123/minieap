@@ -3,3 +3,5 @@
 .*
 minieap
 ifaddrs/
+build/
+minieap.exe

@@ -18,15 +18,14 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <netinet/in.h>
-#include <sys/ioctl.h>
 #include <stdio.h>
-#include <fcntl.h>
 #include <stdlib.h>
-#include <arpa/inet.h>
+#include "oscompat.h"
 
 #ifdef __linux__
 #include <linux/hdreg.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
 #endif
 
 #define IS_MD5_FRAME(frame) \
@@ -180,6 +179,16 @@ close_return:
     if (_fp != NULL) fclose(_fp);
     if (_root_dev) free(_root_dev);
 #endif // TODO macOS ioreg?
+#ifdef _WIN32
+    {
+        DWORD serial = 0, maxcomp = 0, flags = 0;
+        if (!GetVolumeInformationA("C:\\", NULL, 0, &serial, &maxcomp, &flags, NULL, 0)) {
+            PR_ERR("无法获取硬盘序列号，请使用 --fake-serial 选项手动指定硬盘序列号");
+            return;
+        }
+        sprintf((char*)serial_buf, "%08X", serial);
+    }
+#endif
     return;
 }
 

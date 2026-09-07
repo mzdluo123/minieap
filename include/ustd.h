@@ -2,7 +2,9 @@
 #ifndef LIBRHASH_USTD_H
 #define LIBRHASH_USTD_H
 
-#if _MSC_VER >= 1300
+#if defined(_MSC_VER) && _MSC_VER >= 1600
+# include <stdint.h>
+#elif _MSC_VER >= 1300
 
 # define int64_t __int64
 # define int32_t __int32

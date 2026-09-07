@@ -1,3 +1,155 @@
+#ifdef _WIN32
+#include "oscompat.h"
+#include <string.h>
+#include <stdlib.h>
+
+#include "minieap_common.h"
+#include "logging.h"
+#include "config.h"
+#include "misc.h"
+
+#define PID_STRING_BUFFER_SIZE 12
+#define PID_FILE_NONE "none"
+
+static int pid_lock_fd = 0; /* 0 = uninitialized, -1 = disabled, 1 = active */
+static HANDLE pid_lock_fh = INVALID_HANDLE_VALUE;
+
+RESULT pid_lock_init(const char* pidfile) {
+    if (pidfile == NULL) {
+        return FAILURE;
+    }
+
+    if (strcmp(pidfile, PID_FILE_NONE) == 0) {
+        PR_WARN("PID 检查已禁用，请确保一个接口上只有一个认证进程")
+        pid_lock_fd = -1;
+        return SUCCESS;
+    }
+
+    pid_lock_fh = CreateFileA(pidfile, GENERIC_READ | GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (pid_lock_fh == INVALID_HANDLE_VALUE) {
+        PR_ERR("无法打开 PID 文件 (%lu)", GetLastError());
+        return FAILURE;
+    }
+    pid_lock_fd = 1;
+    return SUCCESS;
+}
+
+static RESULT pid_lock_handle_multiple_instance() {
+    char readbuf[PID_STRING_BUFFER_SIZE];
+    DWORD nread = 0;
+    HANDLE proc;
+    int pid;
+
+    memset(readbuf, 0, sizeof(readbuf));
+    SetFilePointer(pid_lock_fh, 0, NULL, FILE_BEGIN);
+    if (!ReadFile(pid_lock_fh, readbuf, PID_STRING_BUFFER_SIZE - 1, &nread, NULL)
+            || readbuf[0] == '\0') {
+        PR_ERR("已有另一个 MiniEAP 进程正在运行但 PID 未知，请手动结束其他 MiniEAP 进程");
+        return FAILURE;
+    }
+
+    pid = atoi(readbuf);
+    switch (get_program_config()->kill_type) {
+        case KILL_NONE:
+            PR_ERR("已有另一个 MiniEAP 进程正在运行，PID 为 %d", pid);
+            return FAILURE;
+        case KILL_ONLY:
+            PR_ERR("已有另一个 MiniEAP 进程正在运行，PID 为 %d，即将发送终止信号并退出……", pid);
+            proc = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);
+            if (proc) {
+                TerminateProcess(proc, 1);
+                CloseHandle(proc);
+            }
+            return FAILURE;
+        case KILL_AND_START:
+            PR_WARN("已有另一个 MiniEAP 进程正在运行，PID 为 %d，将在发送终止信号后继续……", pid);
+            proc = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);
+            if (proc) {
+                TerminateProcess(proc, 1);
+                CloseHandle(proc);
+            }
+            return SUCCESS;
+        default:
+            PR_ERR("-k 参数未知");
+            return FAILURE;
+    }
+}
+
+RESULT pid_lock_save_pid() {
+    char writebuf[PID_STRING_BUFFER_SIZE];
+    DWORD nwritten = 0;
+
+    if (pid_lock_fd == 0) {
+        PR_WARN("PID 文件尚未初始化");
+        return FAILURE;
+    } else if (pid_lock_fd < 0) {
+        return SUCCESS;
+    }
+
+    my_itoa((int)GetCurrentProcessId(), writebuf, 10);
+    SetFilePointer(pid_lock_fh, 0, NULL, FILE_BEGIN);
+    SetEndOfFile(pid_lock_fh);
+    if (!WriteFile(pid_lock_fh, writebuf,
+                   (DWORD)strnlen(writebuf, PID_STRING_BUFFER_SIZE),
+                   &nwritten, NULL)) {
+        PR_ERR("无法将 PID 保存到 PID 文件 (%lu)", GetLastError());
+        return FAILURE;
+    }
+
+    return SUCCESS;
+}
+
+RESULT pid_lock_lock() {
+    OVERLAPPED ov;
+    DWORD err;
+
+    if (pid_lock_fd == 0) {
+        PR_WARN("PID 文件尚未初始化");
+        return FAILURE;
+    } else if (pid_lock_fd < 0) {
+        return SUCCESS;
+    }
+
+    memset(&ov, 0, sizeof(ov));
+    if (!LockFileEx(pid_lock_fh, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                    0, MAXDWORD, MAXDWORD, &ov)) {
+        err = GetLastError();
+        if (err == ERROR_LOCK_VIOLATION || err == ERROR_LOCK_FAILED) {
+            if (IS_FAIL(pid_lock_handle_multiple_instance())) {
+                CloseHandle(pid_lock_fh);
+                pid_lock_fh = INVALID_HANDLE_VALUE;
+                pid_lock_fd = 0;
+                return FAILURE;
+            }
+        } else {
+            PR_ERR("无法对 PID 文件加锁 (%lu)", err);
+            return FAILURE;
+        }
+    }
+
+    return SUCCESS;
+}
+
+RESULT pid_lock_destroy() {
+    OVERLAPPED ov;
+    if (pid_lock_fd <= 0) {
+        return SUCCESS;
+    }
+
+    memset(&ov, 0, sizeof(ov));
+    UnlockFileEx(pid_lock_fh, 0, MAXDWORD, MAXDWORD, &ov);
+    CloseHandle(pid_lock_fh);
+    pid_lock_fh = INVALID_HANDLE_VALUE;
+    pid_lock_fd = 0;
+    if (!DeleteFileA(get_program_config()->pidfile)) {
+        PR_WARN("无法删除 PID 文件");
+    }
+    return SUCCESS;
+}
+
+#else
 #include <sys/file.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -121,3 +273,4 @@ RESULT pid_lock_destroy() {
     }
     return SUCCESS;
 }
+#endif

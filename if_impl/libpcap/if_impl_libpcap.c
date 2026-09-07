@@ -6,10 +6,17 @@
 #include "if_impl.h"
 #include "minieap_common.h"
 #include "logging.h"
+#include "sched_alarm.h"
+#include "oscompat.h"
 
 #include <pcap.h>
-#include <net/if.h>
 #include <stdlib.h>
+#ifndef PCAP_ERROR
+#define PCAP_ERROR -1
+#endif
+#ifndef PCAP_ERROR_BREAK
+#define PCAP_ERROR_BREAK -2
+#endif
 
 typedef struct _if_impl_libpcap_priv {
     int promisc;
@@ -49,11 +56,31 @@ RESULT libpcap_setup_capture_params(struct _if_impl* this, unsigned short eth_pr
     return SUCCESS;
 }
 
+static void libpcap_print_devices(void) {
+    pcap_if_t* alldevs = NULL;
+    pcap_if_t* d;
+    char errbuf[PCAP_ERRBUF_SIZE] = {0};
+
+    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
+        PR_ERR("%s", errbuf);
+        return;
+    }
+    for (d = alldevs; d; d = d->next) {
+        PR_INFO("  %s (%s)", d->name, d->description ? d->description : "");
+    }
+    pcap_freealldevs(alldevs);
+}
+
+void if_impl_print_pcap_devices(void) {
+    libpcap_print_devices();
+}
+
 RESULT libpcap_prepare_interface(struct _if_impl* this) {
     char _err_buf[PCAP_ERRBUF_SIZE] = {0};
     PRIV->pcapdev = pcap_open_live(PRIV->ifname, FRAME_BUF_SIZE, PRIV->promisc, 100, _err_buf);
     if (PRIV->pcapdev == NULL) {
         PR_ERR("libpcap 打开设备失败： %s", _err_buf);
+        libpcap_print_devices();
         return FAILURE;
     }
 
@@ -73,8 +100,17 @@ RESULT libpcap_prepare_interface(struct _if_impl* this) {
 }
 
 RESULT libpcap_start_capture(struct _if_impl* this) {
+#ifdef _WIN32
+    while (PRIV->pcapdev) {
+        int r = pcap_dispatch(PRIV->pcapdev, -1, libpcap_packet_handler, (uint8_t*)this);
+        if (r == PCAP_ERROR_BREAK || r == PCAP_ERROR) break;
+        sched_alarm_poll();
+    }
+    return SUCCESS;
+#else
     pcap_loop(PRIV->pcapdev, -1, libpcap_packet_handler, (uint8_t*)this);
-    return SUCCESS; /* No use if it's blocking... */
+    return SUCCESS;
+#endif
 }
 
 RESULT libpcap_stop_capture(struct _if_impl* this) {
@@ -130,7 +166,11 @@ IF_IMPL* libpcap_new() {
     this->send_frame = libpcap_send_frame;
     this->set_frame_handler = libpcap_set_frame_handler;
     this->name = "libpcap";
+#ifdef _WIN32
+    this->description = "采用 Npcap/libpcap 进行通信的网络接口模块";
+#else
     this->description = "采用 libpcap 进行通信的可移植网络接口模块";
+#endif
     return this;
 }
 IF_IMPL_INIT(libpcap_new);

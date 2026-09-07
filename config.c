@@ -2,10 +2,9 @@
  * General EAP config center
  */
 
-#include <getopt.h>
-#include <unistd.h>
+#include "oscompat.h"
 #include <stdlib.h>
-#include <net/if.h>
+#include <string.h>
 
 #include "config.h"
 #include "logging.h"
@@ -24,8 +23,13 @@ static void configure_log_by_daemon_type(DAEMON_TYPE daemon_type) {
             set_log_destination(LOG_TO_CONSOLE);
             break;
         case DAEMON_NO_LOG:
-            set_log_file_path("/dev/null");
-            set_log_destination(LOG_TO_FILE);
+            set_log_file_path(
+#ifdef _WIN32
+                "NUL"
+#else
+                "/dev/null"
+#endif
+            );
             break;
         case DAEMON_CONSOLE_LOG:
             set_log_destination(LOG_TO_CONSOLE);
@@ -286,7 +290,11 @@ RESULT validate_params() {
     ASSERT_NOTIFY(!g_proxy_config.proxy_on && !g_eap_config.password, "密码不能为空");
     ASSERT_NOTIFY(g_proxy_config.proxy_on && !g_proxy_config.lan_ifname,
                         "代理认证开启时，LAN 侧网卡名不能为空");
-    ASSERT_NOTIFY(!g_prog_config.ifname, "网卡名不能为空");
+    if (!g_prog_config.ifname) {
+        PR_ERR("网卡名不能为空");
+        if_impl_print_pcap_devices();
+        return FAILURE;
+    }
     return SUCCESS;
 }
 

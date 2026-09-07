@@ -3,8 +3,7 @@
 
 #include "minieap_common.h"
 #include <stdint.h>
-#include <sys/types.h>
-#include <getopt.h>
+#include "oscompat.h"
 
 /*
  * Check if it's free-able, free it, then clear the pointer
@@ -59,4 +58,8 @@ void strarrayprint(int count, char* array[]);
  * Similar to strndup but without trailing 0
  */
 void* memdup(const void* src, int n);
+
+#ifdef _MSC_VER
+char* strndup(const char* s, size_t n);
+#endif
 #endif
