@@ -203,6 +203,8 @@ static void signal_handler(int signal) {
 int main(int argc, char* argv[]) {
 #ifdef _WIN32
     WSADATA wsa;
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         fprintf(stderr, "WSAStartup failed\n");
         return FAILURE;
