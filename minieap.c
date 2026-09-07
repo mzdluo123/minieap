@@ -8,6 +8,7 @@
 #include "misc.h"
 #include "conf_parser.h"
 #include "pid_lock.h"
+#include "win32.h"
 
 #include <stdlib.h>
 #include <errno.h>
@@ -140,10 +141,12 @@ static int init_if() {
         return FAILURE;
     }
 
+#ifndef _WIN32
     if (IS_FAIL(if_impl->prepare_interface(if_impl))) {
         PR_ERR("捕获准备失败");
         return FAILURE;
     }
+#endif
 
     if_impl->set_frame_handler(if_impl, eap_state_machine_recv_handler);
 
@@ -165,7 +168,51 @@ static void apply_log_daemon_params() {
     start_log();
 }
 
+#ifdef _WIN32
+static RESULT run_windows_network(void) {
+    IF_IMPL* impl = get_if_impl();
+    if (!impl->release_interface) {
+        PR_ERR("网络驱动不支持释放捕获资源");
+        return FAILURE;
+    }
+    if (IS_FAIL(win32_power_init())) return FAILURE;
+
+    PR_INFO("========================");
+    PR_INFO("MiniEAP " VERSION "已启动");
+    for (;;) {
+        /* A notification racing with open/init must remain pending. Never
+         * acknowledge it after a handle or authentication attempt is created. */
+        win32_begin_network_attempt();
+        if (!win32_reconnect_pending() &&
+            !IS_FAIL(impl->prepare_interface(impl)) &&
+            !win32_reconnect_pending() &&
+            !IS_FAIL(eap_state_machine_init()) &&
+            !win32_reconnect_pending()) {
+            packet_plugin_set_auth_round(1);
+            if (!IS_FAIL(switch_to_state(EAP_STATE_START_SENT, NULL)) &&
+                !win32_reconnect_pending()) {
+                if (IS_FAIL(impl->start_capture(impl))) {
+                    PR_WARN("捕获中断，将重建网络会话");
+                }
+            }
+        }
+
+        /* No callback is running here. Cancel borrowed plugin state first,
+         * then free the EAP frame/builder and every outstanding timer. */
+        packet_plugin_reset_session();
+        eap_state_machine_destroy();
+        sched_alarm_destroy();
+        impl->release_interface(impl);
+        PR_WARN("网络会话已清理，5 秒后等待网卡就绪并重新认证");
+        Sleep(5000);
+    }
+}
+#endif
+
 static void exit_handler(void) {
+#ifdef _WIN32
+    win32_power_destroy();
+#endif
     free_if_impl();
     packet_plugin_destroy();
     eap_state_machine_destroy();
@@ -228,9 +275,11 @@ int main(int argc, char* argv[]) {
         return FAILURE;
     }
 
+#ifndef _WIN32
     if (IS_FAIL(eap_state_machine_init())) {
         return FAILURE;
     }
+#endif
 
     if (IS_FAIL(sched_alarm_init())) {
         return FAILURE;
@@ -244,7 +293,9 @@ int main(int argc, char* argv[]) {
 
     pid_lock_save_pid();
 
-    switch_to_state(EAP_STATE_PREPARING, NULL);
-
-    return 0;
+#ifdef _WIN32
+    return IS_FAIL(run_windows_network()) ? EXIT_FAILURE : EXIT_SUCCESS;
+#else
+    return IS_FAIL(switch_to_state(EAP_STATE_PREPARING, NULL)) ? EXIT_FAILURE : EXIT_SUCCESS;
+#endif
 }

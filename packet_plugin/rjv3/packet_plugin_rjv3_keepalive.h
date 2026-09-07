@@ -9,5 +9,6 @@ void rjv3_set_keepalive_dest_mac(uint8_t* mac);
 void rjv3_keepalive_reset();
 
 RESULT rjv3_send_new_keepalive_frame(struct _packet_plugin* this);
+void rjv3_start_keepalive(struct _packet_plugin* this);
 void rjv3_send_keepalive_timed(void* vthis);
 #endif

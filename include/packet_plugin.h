@@ -119,6 +119,13 @@ typedef struct _packet_plugin {
     void (*save_config)(struct _packet_plugin* this);
 
     /*
+     * Optional: cancel session timers and release transient authentication state,
+     * preserving configuration. Called outside scheduler callbacks, before the
+     * scheduler and EAP state machine are reinitialized for a fresh session.
+     */
+    void (*reset_session)(struct _packet_plugin* this);
+
+    /*
      * Plugin name, to be shown to and selected by user
      */
     char* name;
@@ -152,6 +159,7 @@ void save_active_packet_plugin_list();
  * for details.
  */
 void packet_plugin_destroy();
+void packet_plugin_reset_session(void);
 RESULT packet_plugin_process_cmdline_opts(int argc, char* argv[]);
 RESULT packet_plugin_validate_params();
 void packet_plugin_print_banner();

@@ -18,7 +18,20 @@
 
 #define PRIV ((rjv3_priv*)(this->priv))
 
+static void rjv3_reset_session(PACKET_PLUGIN* this) {
+    if (PRIV->secondary_auth_alarm_id >= 0) {
+        unschedule_alarm(PRIV->secondary_auth_alarm_id);
+        PRIV->secondary_auth_alarm_id = -1;
+    }
+    rjv3_keepalive_reset();
+    free_frame(&PRIV->duplicated_packet);
+    PRIV->dhcp_count = 0;
+    PRIV->succ_count = 0;
+    PRIV->last_recv_packet = NULL;
+}
+
 void rjv3_destroy(struct _packet_plugin* this) {
+    rjv3_reset_session(this);
     chk_free((void**)&PRIV->service_name);
     chk_free((void**)&PRIV->ver_str);
     chk_free((void**)&PRIV->dhcp_script);
@@ -29,13 +42,6 @@ void rjv3_destroy(struct _packet_plugin* this) {
     list_destroy(&PRIV->cmd_prop_mod_list, TRUE);
     chk_free((void**)&this->priv);
     chk_free((void**)&this);
-}
-
-static void rjv3_reset_state(PACKET_PLUGIN* this) {
-    PRIV->dhcp_count = 0;
-    PRIV->succ_count = 0;
-    PRIV->last_recv_packet = NULL;
-    rjv3_keepalive_reset();
 }
 
 static RESULT append_rj_cmdline_opt(struct _packet_plugin* this, const char* opt) {
@@ -215,6 +221,11 @@ RESULT rjv3_prepare_frame(struct _packet_plugin* this, ETH_EAP_FRAME* frame) {
 }
 
 static RESULT rjv3_process_success(struct _packet_plugin* this, ETH_EAP_FRAME* frame) {
+    rjv3_keepalive_reset();
+    if (PRIV->secondary_auth_alarm_id >= 0) {
+        unschedule_alarm(PRIV->secondary_auth_alarm_id);
+        PRIV->secondary_auth_alarm_id = -1;
+    }
     PRIV->succ_count++;
 
     if (PRIV->dhcp_type == DHCP_DOUBLE_AUTH) {
@@ -233,6 +244,11 @@ static RESULT rjv3_process_success(struct _packet_plugin* this, ETH_EAP_FRAME* f
                 free_frame(&PRIV->duplicated_packet);
             }
             PRIV->duplicated_packet = frame_duplicate(frame);
+            if (PRIV->duplicated_packet == NULL) {
+                rjv3_reset_session(this);
+                PR_ERR("无法保存首次认证成功报文");
+                return FAILURE;
+            }
             system(PRIV->dhcp_script);
 
             /* Try right after the script ends */
@@ -244,7 +260,7 @@ static RESULT rjv3_process_success(struct _packet_plugin* this, ETH_EAP_FRAME* f
             return SUCCESS;
         } else {
             /* Double success */
-            rjv3_reset_state(this);
+            rjv3_reset_session(this);
             PR_INFO("二次认证成功");
         }
     } else if (PRIV->dhcp_type == DHCP_AFTER_AUTH) {
@@ -257,13 +273,13 @@ static RESULT rjv3_process_success(struct _packet_plugin* this, ETH_EAP_FRAME* f
     }
 
     PR_INFO("正定时发送 Keep-Alive 报文以保持在线……");
-    schedule_alarm(1, rjv3_send_keepalive_timed, this);
+    rjv3_start_keepalive(this);
     return SUCCESS;
 }
 
 static RESULT rjv3_process_failure(PACKET_PLUGIN* this, ETH_EAP_FRAME* frame) {
     rjv3_process_result_prop(frame);
-    rjv3_reset_state(this);
+    rjv3_reset_session(this);
     return SUCCESS;
 }
 
@@ -365,11 +381,13 @@ PACKET_PLUGIN* packet_plugin_rjv3_new() {
         return NULL;
     }
     memset(this->priv, 0, sizeof(rjv3_priv));
+    PRIV->secondary_auth_alarm_id = -1;
 
     this->name = "rjv3";
     this->description = "来自 hyrathb@GitHub 的 Ruijie V3 验证算法";
     this->version = PACKET_PLUGIN_RJV3_VER_STR;
     this->destroy = rjv3_destroy;
+    this->reset_session = rjv3_reset_session;
     this->process_cmdline_opts = rjv3_process_cmdline_opts;
     this->print_banner = packet_plugin_rjv3_print_banner;
     this->load_default_params = rjv3_load_default_params;

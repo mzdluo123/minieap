@@ -8,6 +8,8 @@
 #include "logging.h"
 #include "sched_alarm.h"
 #include "oscompat.h"
+#include "net_util.h"
+#include "win32.h"
 
 #include <pcap.h>
 #include <stdlib.h>
@@ -32,18 +34,22 @@ static void libpcap_packet_handler(uint8_t* vthis, const struct pcap_pkthdr* pkt
     ETH_EAP_FRAME _frame;
     IF_IMPL* this = (IF_IMPL*)vthis;
 
+#ifdef _WIN32
+    if (win32_reconnect_pending()) return;
+#endif
     _frame.buffer_len = _frame.actual_len = pkthdr->caplen;
     _frame.content = (uint8_t*)packet;
     PRIV->handler(&_frame);
 }
 
 RESULT libpcap_set_ifname(struct _if_impl* this, const char* ifname) {
-    strncpy(PRIV->ifname, ifname, IFNAMSIZ);
+    if (strlen(ifname) >= sizeof(PRIV->ifname)) return FAILURE;
+    strcpy(PRIV->ifname, ifname);
     return SUCCESS;
 }
 
 RESULT libpcap_get_ifname(struct _if_impl* this, char* buf, int buflen) {
-    if (buflen < strnlen(PRIV->ifname, IFNAMSIZ)) {
+    if (buflen <= strnlen(PRIV->ifname, IFNAMSIZ)) {
         return FAILURE;
     }
     strncpy(buf, PRIV->ifname, buflen);
@@ -75,40 +81,90 @@ void if_impl_print_pcap_devices(void) {
     libpcap_print_devices();
 }
 
+static void libpcap_release_interface(struct _if_impl* this) {
+    if (PRIV->pcapdev) {
+        pcap_close(PRIV->pcapdev);
+        PRIV->pcapdev = NULL;
+    }
+}
+
 RESULT libpcap_prepare_interface(struct _if_impl* this) {
     char _err_buf[PCAP_ERRBUF_SIZE] = {0};
-    PRIV->pcapdev = pcap_open_live(PRIV->ifname, FRAME_BUF_SIZE, PRIV->promisc, 100, _err_buf);
-    if (PRIV->pcapdev == NULL) {
-        PR_ERR("libpcap 打开设备失败： %s", _err_buf);
-        libpcap_print_devices();
-        return FAILURE;
-    }
-
     char _filter_str[30] = {0};
     struct bpf_program _bpf;
-    sprintf(_filter_str, "ether proto 0x%hx", PRIV->proto);
-    if (pcap_compile(PRIV->pcapdev, &_bpf, _filter_str, 0, 0) < 0) {
-        PR_ERR("libpcap 过滤器编译失败");
+    const char* name = PRIV->ifname;
+#ifdef _WIN32
+    char pcap_name[IFNAMSIZ];
+#endif
+    libpcap_release_interface(this);
+#ifdef _WIN32
+    if (win32_reconnect_pending() ||
+        IS_FAIL(win32_prepare_iface(PRIV->ifname, pcap_name, sizeof(pcap_name)))) {
+        return FAILURE;
+    }
+    name = pcap_name;
+#endif
+    PRIV->pcapdev = pcap_open_live(name, FRAME_BUF_SIZE, PRIV->promisc, 100, _err_buf);
+    if (PRIV->pcapdev == NULL) {
+        PR_ERR("libpcap 打开设备失败： %s", _err_buf);
         return FAILURE;
     }
 
-    if (pcap_setfilter(PRIV->pcapdev, &_bpf) < 0) {
-        PR_ERR("libpcap 过滤器设置失败");
-        return FAILURE;
+    sprintf(_filter_str, "ether proto 0x%hx", PRIV->proto);
+    if (pcap_compile(PRIV->pcapdev, &_bpf, _filter_str, 0, 0) < 0) {
+        PR_ERR("libpcap 过滤器编译失败： %s", pcap_geterr(PRIV->pcapdev));
+        goto fail;
     }
+    int r = pcap_setfilter(PRIV->pcapdev, &_bpf);
+    pcap_freecode(&_bpf);
+    if (r < 0) {
+        PR_ERR("libpcap 过滤器设置失败： %s", pcap_geterr(PRIV->pcapdev));
+        goto fail;
+    }
+#ifdef _WIN32
+    /* Readiness waits below are bounded even with no traffic or a stale NIC.
+     * The pcap read timeout alone does not guarantee that dispatch returns. */
+    if (pcap_setnonblock(PRIV->pcapdev, 1, _err_buf) < 0) {
+        PR_ERR("libpcap 非阻塞设置失败： %s", _err_buf);
+        goto fail;
+    }
+#endif
     return SUCCESS;
+fail:
+    libpcap_release_interface(this);
+    return FAILURE;
 }
 
 RESULT libpcap_start_capture(struct _if_impl* this) {
+    if (!PRIV->pcapdev) return FAILURE;
 #ifdef _WIN32
-    while (PRIV->pcapdev) {
-        int r = pcap_dispatch(PRIV->pcapdev, -1, libpcap_packet_handler, (uint8_t*)this);
-        if (r == PCAP_ERROR_BREAK || r == PCAP_ERROR) break;
-        sched_alarm_poll();
+    HANDLE ready = pcap_getevent(PRIV->pcapdev);
+    if (!ready || ready == INVALID_HANDLE_VALUE) {
+        PR_ERR("无法获取 Npcap 捕获事件");
+        return FAILURE;
+    }
+    while (!win32_reconnect_pending()) {
+        DWORD wait = WaitForSingleObject(ready, 100);
+        if (wait == WAIT_FAILED) {
+            PR_ERR("等待 Npcap 捕获事件失败 (%lu)", GetLastError());
+            return FAILURE;
+        }
+        if (win32_reconnect_pending()) break;
+        /* Bound each batch so a busy interface cannot starve timers/recovery. */
+        int r = pcap_dispatch(PRIV->pcapdev, 32, libpcap_packet_handler, (uint8_t*)this);
+        if (r == PCAP_ERROR) {
+            PR_ERR("libpcap 捕获失败： %s", pcap_geterr(PRIV->pcapdev));
+            return FAILURE;
+        }
+        if (r == PCAP_ERROR_BREAK) return SUCCESS;
+        if (!win32_reconnect_pending()) sched_alarm_poll();
     }
     return SUCCESS;
 #else
-    pcap_loop(PRIV->pcapdev, -1, libpcap_packet_handler, (uint8_t*)this);
+    if (pcap_loop(PRIV->pcapdev, -1, libpcap_packet_handler, (uint8_t*)this) == PCAP_ERROR) {
+        PR_ERR("libpcap 捕获失败： %s", pcap_geterr(PRIV->pcapdev));
+        return FAILURE;
+    }
     return SUCCESS;
 #endif
 }
@@ -123,7 +179,15 @@ RESULT libpcap_stop_capture(struct _if_impl* this) {
 }
 
 RESULT libpcap_send_frame(struct _if_impl* this, ETH_EAP_FRAME* frame) {
+#ifdef _WIN32
+    if (win32_reconnect_pending()) return FAILURE;
+#endif
     if (!PRIV->pcapdev || pcap_sendpacket(PRIV->pcapdev, frame->content, frame->actual_len) < 0) {
+        PR_ERR("libpcap 发送失败： %s",
+            PRIV->pcapdev ? pcap_geterr(PRIV->pcapdev) : "设备未打开");
+#ifdef _WIN32
+        win32_request_reconnect();
+#endif
         return FAILURE;
     }
     return SUCCESS;
@@ -134,7 +198,7 @@ void libpcap_set_frame_handler(struct _if_impl* this, void (*handler)(ETH_EAP_FR
 }
 
 void libpcap_destroy(IF_IMPL* this) {
-    if (PRIV->pcapdev) pcap_close(PRIV->pcapdev);
+    libpcap_release_interface(this);
     free(PRIV);
     free(this);
 }
@@ -161,6 +225,7 @@ IF_IMPL* libpcap_new() {
     this->destroy = libpcap_destroy;
     this->setup_capture_params = libpcap_setup_capture_params;
     this->prepare_interface = libpcap_prepare_interface;
+    this->release_interface = libpcap_release_interface;
     this->start_capture = libpcap_start_capture;
     this->stop_capture = libpcap_stop_capture;
     this->send_frame = libpcap_send_frame;

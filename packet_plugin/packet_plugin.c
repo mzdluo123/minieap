@@ -71,6 +71,15 @@ void packet_plugin_destroy() {
     list_destroy(&g_active_packet_plugin_list, FALSE);
 }
 
+void packet_plugin_reset_session(void) {
+    LIST_ELEMENT *plugin_info = g_active_packet_plugin_list;
+    if (g_active_packet_plugin_list == NULL) return;
+    do {
+        CHK_FUNC(PLUGIN->reset_session);
+        PLUGIN->reset_session(PLUGIN);
+    } while ((plugin_info = plugin_info->next));
+}
+
 RESULT packet_plugin_process_cmdline_opts(int argc, char* argv[]) {
     LIST_ELEMENT *plugin_info = g_active_packet_plugin_list;
     if (g_active_packet_plugin_list == NULL) return SUCCESS;

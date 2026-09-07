@@ -26,7 +26,7 @@
 
 /*
  * Representing an interface driver plugin.
- * Main program should exit after any FAILURE returning value
+ * Callers must handle FAILURE; a recoverable backend may be prepared again.
  */
 typedef struct _if_impl {
     /*
@@ -72,10 +72,17 @@ typedef struct _if_impl {
     RESULT (*prepare_interface)(struct _if_impl* this);
 
     /*
+     * Optional: release capture resources without destroying configuration.
+     * Called only after start_capture returns, never from a packet callback.
+     * Required for backends used by the Windows reconnect loop.
+     */
+    void (*release_interface)(struct _if_impl* this);
+
+    /*
      * Can be used to launch/terminate the actual capturing loop.
      * Note: `start_capture` should be blocking.
      *
-     * Return: if capturing started/stopped successfully (no use in start_capture since it's blocking)
+     * Return: SUCCESS on an intentional stop, FAILURE on a capture error.
      */
     RESULT (*start_capture)(struct _if_impl* this);
     RESULT (*stop_capture)(struct _if_impl* this);

@@ -3,6 +3,7 @@
 #include "logging.h"
 #include "misc.h"
 #include "sched_alarm.h"
+#include "win32.h"
 
 #include "oscompat.h"
 #include <limits.h>
@@ -12,19 +13,26 @@
 #endif
 
 typedef struct _alarm_event {
+#ifdef _WIN32
+    ULONGLONG deadline_ms;
+#else
     int remaining;
+#endif
     int id;
     int marked_delete;
     void (*func)(void*);
     void* user;
 } ALARM_EVENT;
 
+#define EVENT ((ALARM_EVENT*)alarm_event)
+
 static LIST_ELEMENT* g_alarm_list = NULL;
 static LIST_ELEMENT* g_alarm_list_add_temp = NULL;
 static int g_last_id = 0;
 static int g_ringing = 0;
+#ifndef _WIN32
 static int g_last_set_time = 0;
-static unsigned long g_alarm_anchor_ms = 0;
+#endif
 
 #ifdef DEBUG
 static void print_list(LIST_ELEMENT** list) {
@@ -35,7 +43,11 @@ static void print_list(LIST_ELEMENT** list) {
         PR_DBG("    next at %p", (*ref)->next);
         PR_DBG("    content at %p", (*ref)->content);
         elem = (*ref)->content;
+#ifdef _WIN32
+        PR_DBG("    deadline %llu", (unsigned long long)elem->deadline_ms);
+#else
         PR_DBG("    remain %d", elem->remaining);
+#endif
         PR_DBG("    id %d", elem->id);
         PR_DBG("    marked delete %d", elem->marked_delete);
         PR_DBG("    func %p", elem->func);
@@ -46,14 +58,10 @@ static void print_list(LIST_ELEMENT** list) {
 }
 #endif
 
+#ifndef _WIN32
 static void set_alarm(int time) {
-#ifdef _WIN32
-    g_last_set_time = time;
-    g_alarm_anchor_ms = (time <= 0 || time == INT_MAX) ? 0 : GetTickCount();
-#else
     alarm(time);
     g_last_set_time = time;
-#endif
 }
 
 static int find_min_remaining(LIST_ELEMENT* list) {
@@ -70,7 +78,6 @@ static int find_min_remaining(LIST_ELEMENT* list) {
 }
 
 static void update_remaining_single(void* alarm_event, void* secs) {
-#define EVENT ((ALARM_EVENT*)alarm_event)
     EVENT->remaining -= *(int*)secs;
 }
 
@@ -79,12 +86,18 @@ static void fire_single(void* alarm_event, void* unused) {
         EVENT->func(EVENT->user);
     }
 }
+#endif
 
 /* cmpfunc: 0 = match (should be cleaned / not valid), other = unmatch */
 static int alarm_valid_cmpfunc(void* unused, void* alarm_event) {
+#ifdef _WIN32
+    return EVENT->marked_delete == FALSE;
+#else
     return EVENT->remaining > 0 && EVENT->marked_delete == FALSE;
+#endif
 }
 
+#ifndef _WIN32
 void alarm_sig_handler(int sig) {
     g_ringing = TRUE;
 #ifdef DEBUG
@@ -121,30 +134,48 @@ void alarm_sig_handler(int sig) {
 #endif
     g_ringing = FALSE;
 }
+#endif
 
 RESULT sched_alarm_init() {
-#ifdef _WIN32
-    return SUCCESS;
-#else
+    sched_alarm_destroy();
+#ifndef _WIN32
     signal(SIGALRM, alarm_sig_handler);
-    return SUCCESS;
 #endif
+    return SUCCESS;
 }
 
 void sched_alarm_destroy() {
-#ifdef _WIN32
-    g_alarm_anchor_ms = 0;
-#else
+#ifndef _WIN32
     alarm(0);
+    g_last_set_time = 0;
 #endif
     list_destroy(&g_alarm_list, TRUE);
+    list_destroy(&g_alarm_list_add_temp, TRUE);
+    g_ringing = FALSE;
 }
 
 #ifdef _WIN32
 void sched_alarm_poll(void) {
-    if (g_alarm_anchor_ms == 0 || g_last_set_time <= 0) return;
-    if ((GetTickCount() - g_alarm_anchor_ms) / 1000u >= (DWORD)g_last_set_time)
-        alarm_sig_handler(0);
+    LIST_ELEMENT* node;
+    ULONGLONG now;
+
+    if (g_ringing) return;
+    now = GetTickCount64();
+    g_ringing = TRUE;
+    for (node = g_alarm_list; node; node = node->next) {
+        ALARM_EVENT* event = node->content;
+        if (win32_reconnect_pending()) break;
+        if (!event->marked_delete && event->deadline_ms <= now) {
+            /* Consume before calling out; cancellation can mark later entries. */
+            event->marked_delete = TRUE;
+            event->func(event->user);
+        }
+    }
+    remove_data(&g_alarm_list, NULL, alarm_valid_cmpfunc, TRUE);
+    remove_data(&g_alarm_list_add_temp, NULL, alarm_valid_cmpfunc, TRUE);
+    list_concat(&g_alarm_list, g_alarm_list_add_temp);
+    g_alarm_list_add_temp = NULL;
+    g_ringing = FALSE;
 }
 #endif
 
@@ -164,6 +195,7 @@ static int alarm_event_id_node_cmpfunc(void* id, void* node) {
 void unschedule_alarm(int id) {
     if (g_ringing) {
         list_traverse(g_alarm_list, alarm_mark_as_delete_single, &id);
+        list_traverse(g_alarm_list_add_temp, alarm_mark_as_delete_single, &id);
 #ifdef DEBUG
         PR_DBG("Marked event id = %d as deletion", id);
         print_list(&g_alarm_list);
@@ -183,7 +215,11 @@ int schedule_alarm(int secs, void (*func)(void*), void* user) {
         PR_ERR("无法为闹钟事件分配内存");
         return -1;
     }
+#ifdef _WIN32
+    _event->deadline_ms = GetTickCount64() + (secs > 0 ? (ULONGLONG)secs * 1000 : 0);
+#else
     _event->remaining = secs;
+#endif
     _event->id = ++g_last_id;
     _event->func = func;
     _event->user = user;
@@ -198,21 +234,7 @@ int schedule_alarm(int secs, void (*func)(void*), void* user) {
 #endif
     } else {
 #ifdef _WIN32
-        if (g_alarm_anchor_ms != 0 && g_last_set_time > 0) {
-            DWORD elapsed = (GetTickCount() - g_alarm_anchor_ms) / 1000u;
-            if (elapsed >= (DWORD)g_last_set_time)
-                sched_alarm_poll();
-        }
-        int _curr_remaining;
-        if (g_alarm_anchor_ms == 0 || g_last_set_time <= 0) {
-            _curr_remaining = INT_MAX;
-        } else {
-            DWORD elapsed = (GetTickCount() - g_alarm_anchor_ms) / 1000u;
-            _curr_remaining = (elapsed >= (DWORD)g_last_set_time)
-                ? 0 : (g_last_set_time - (int)elapsed);
-        }
-        if (_curr_remaining == 0) _curr_remaining = INT_MAX;
-        set_alarm(_curr_remaining < secs ? _curr_remaining : secs);
+        /* Scheduling never dispatches callbacks; only an explicit poll does. */
         insert_data(&g_alarm_list, _event);
 #else
         /* Not ringing. Time to next alarm should be obtained by alarm(0) */

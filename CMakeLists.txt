@@ -200,7 +200,31 @@ if(ENABLE_PACKET_PLUGIN_PRINTER)
 endif()
 
 if(WIN32)
-    target_link_libraries(minieap PRIVATE ws2_32 iphlpapi)
+    target_sources(minieap PRIVATE util/win32.c)
+    target_link_libraries(minieap PRIVATE ws2_32 iphlpapi powrprof)
+endif()
+
+option(MINIEAP_BUILD_TESTS "Build Windows recovery regression checks" OFF)
+if(MINIEAP_BUILD_TESTS)
+    if(NOT WIN32 OR NOT ENABLE_PACKET_PLUGIN_RJV3)
+        message(FATAL_ERROR "Recovery checks require Windows and ENABLE_PACKET_PLUGIN_RJV3=ON")
+    endif()
+    enable_testing()
+    get_target_property(_test_sources minieap SOURCES)
+    # These units are included by the test with OS/adapter fault injection.
+    list(REMOVE_ITEM _test_sources
+        minieap.c eap_state_machine.c util/win32.c util/sched_alarm.c
+        if_impl/libpcap/if_impl_libpcap.c
+        "${CMAKE_CURRENT_SOURCE_DIR}/packet_plugin/rjv3/packet_plugin_rjv3_keepalive.c")
+    add_executable(windows_recovery tests/windows_recovery.c ${_test_sources})
+    foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_DIRECTORIES LINK_LIBRARIES)
+        get_target_property(_value minieap ${_property})
+        if(_value)
+            set_property(TARGET windows_recovery PROPERTY ${_property} "${_value}")
+        endif()
+    endforeach()
+    add_test(NAME windows_recovery COMMAND windows_recovery)
+    set_tests_properties(windows_recovery PROPERTIES TIMEOUT 30)
 endif()
 
 if(WIN32)

@@ -114,6 +114,28 @@ static const IP_ADAPTER_ADDRESSES* win_find_adapter(IP_ADAPTER_ADDRESSES* head, 
     return NULL;
 }
 
+RESULT win32_prepare_iface(const char* ifname, char* pcap_name, int buflen) {
+    IP_ADAPTER_ADDRESSES* head = win_get_adapters();
+    const IP_ADAPTER_ADDRESSES* a;
+    MIB_IF_ROW2 row = {0};
+    RESULT result = FAILURE;
+    if (!head) return FAILURE;
+    a = win_find_adapter(head, ifname);
+    if (a && a->AdapterName && a->PhysicalAddressLength == 6) {
+        row.InterfaceLuid = a->Luid;
+        /* OperStatus can be Dormant while 802.1X has not authenticated.
+         * Waiting for OperStatusUp or an IP here would deadlock authentication. */
+        if (GetIfEntry2(&row) == NO_ERROR &&
+            row.AdminStatus == NET_IF_ADMIN_STATUS_UP &&
+            row.MediaConnectState == MediaConnectStateConnected) {
+            int n = snprintf(pcap_name, buflen, "\\Device\\NPF_%s", a->AdapterName);
+            if (n >= 0 && n < buflen) result = SUCCESS;
+        }
+    }
+    free(head);
+    return result;
+}
+
 static void win_prefix_to_mask(int family, UINT8 prefix, uint8_t* mask) {
     if (family == AF_INET) {
         uint32_t m = (prefix == 0) ? 0 : htonl(0xFFFFFFFFu << (32 - prefix));

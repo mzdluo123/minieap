@@ -1,0 +1,19 @@
+<service>
+  <id>minieap</id>
+  <name>MiniEAP</name>
+  <description>MiniEAP 802.1X client using Npcap</description>
+  <executable>%BASE%\minieap.exe</executable>
+  <workingdirectory>%BASE%</workingdirectory>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <stoptimeout>15 sec</stoptimeout>
+  <onfailure action="restart" delay="5 sec"/>
+  <onfailure action="restart" delay="5 sec"/>
+  <onfailure action="restart" delay="5 sec"/>
+  <resetfailure>1 min</resetfailure>
+  <logpath>%BASE%\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>512</sizeThreshold>
+    <keepFiles>2</keepFiles>
+  </log>
+</service>

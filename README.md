@@ -57,6 +57,8 @@ cmake --build build
 
 ### Windows
 
+Windows 最低版本为 Windows 8 / Windows Server 2012（使用 `PowerRegisterSuspendResumeNotification` 电源通知 API）。
+
 1. 安装 [Npcap](https://npcap.com/) **运行时**，安装时勾选 WinPcap API 兼容模式。仅有 SDK 无法在运行时加载 `wpcap.dll`。
 2. 使用 MSVC（Visual Studio）或 MinGW-w64，以及 CMake 3.20+。
 3. 配置并编译（Npcap SDK 会在配置阶段自动从官网下载；也可预先解压 SDK 后指定 `-DNPCAP_SDK_DIR=`）：
@@ -68,9 +70,25 @@ cmake --build build --config Release
 
 Visual Studio 生成器下可执行文件为 `build/Release/minieap.exe`；Ninja/MinGW 一般为 `build/minieap.exe`。
 
-Windows 上强制启用 `libpcap` if_impl（链接 Npcap 的 `wpcap` / `Packet`），并默认使用内置 GBK 转换（`ENABLE_GBCONV`）。不支持 WinDivert 或 raw socket if_impl，也不会安装为 Windows 服务。
+Windows 上强制启用 `libpcap` if_impl（链接 Npcap 的 `wpcap` / `Packet`），并默认使用内置 GBK 转换（`ENABLE_GBCONV`）。不支持 WinDivert 或 raw socket if_impl。CMake 安装不会自动注册 Windows 服务；服务部署文件位于 `deploy/`。
 
 配置文件、PID、日志默认写在当前目录：`minieap.conf`、`minieap.pid`、`minieap.log`。
+
+#### 睡眠 / 休眠恢复
+
+Windows 下接收系统挂起和恢复通知；电源回调只标记旧会话失效，主线程负责关闭旧捕获句柄、清除 EAP / 锐捷会话及所有旧定时任务，然后重新发送 EAPOL-Start。无人值守唤醒也会触发恢复，不需要等待服务器发送掉线报文。
+
+网卡尚未恢复、捕获出错、发包失败或认证阶段重试耗尽时，程序会清理会话并每隔 5 秒重新尝试。网卡就绪检查只要求接口启用且媒体已连接，不等待 IP 地址或 802.1X 认证成功。直接运行 EXE 和 WinSW 服务模式均使用此进程内恢复路径；配置错误、达到最大认证失败次数、禁止掉线重认证等原有退出策略仍保留。
+
+可选的 Windows 回归验证（需要启用默认的 RJv3 插件及安装 Npcap 运行时）：
+
+```
+cmake -S . -B build -DMINIEAP_BUILD_TESTS=ON
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+```
+
+验证程序使用真实主循环、状态机、定时器和心跳代码，注入电源事件与适配器故障，并检查原生电源通知注册/注销；不会发送真实认证报文或让电脑睡眠。真实网卡的 S3 / S4 恢复仍需在目标网络上实测。
 
 ## 运行
 

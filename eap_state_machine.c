@@ -10,6 +10,7 @@
 #include "eth_frame.h"
 #include "net_util.h"
 #include "sched_alarm.h"
+#include "win32.h"
 
 #include <stdlib.h>
 
@@ -73,8 +74,11 @@ RESULT eap_state_machine_init() {
     IF_IMPL* _if_impl = get_if_impl();
     char buf[IFNAMSIZ] = {0};
 
-    _if_impl->get_ifname(_if_impl, buf, IFNAMSIZ);
-    obtain_iface_mac(buf, PRIV->local_mac);
+    if (IS_FAIL(_if_impl->get_ifname(_if_impl, buf, IFNAMSIZ)) ||
+        IS_FAIL(obtain_iface_mac(buf, PRIV->local_mac))) {
+        PR_ERR("无法获取认证网卡 MAC");
+        return FAILURE;
+    }
 
     eap_state_machine_reset();
 
@@ -84,9 +88,9 @@ RESULT eap_state_machine_init() {
 }
 
 void eap_state_machine_destroy() {
+    eap_state_machine_reset();
     packet_builder_destroy();
     PRIV->packet_builder = NULL;
-    free_frame(&PRIV->last_recv_frame);
 }
 
 static inline void set_outgoing_eth_fields(PACKET_BUILDER* builder) {
@@ -303,8 +307,8 @@ static RESULT trans_to_preparing(ETH_EAP_FRAME* frame) {
     PR_INFO("MiniEAP " VERSION "已启动");
     IF_IMPL* _if_impl = get_if_impl();
     RESULT ret = switch_to_state(EAP_STATE_START_SENT, frame);
-    _if_impl->start_capture(_if_impl); // Blocking...
-    return ret;
+    if (IS_FAIL(ret)) return ret;
+    return _if_impl->start_capture(_if_impl); // Blocking...
 }
 
 static RESULT trans_to_start_sent(ETH_EAP_FRAME* frame) {
@@ -342,13 +346,22 @@ static RESULT trans_to_failure(ETH_EAP_FRAME* frame) {
  */
 RESULT switch_to_state(EAP_STATE state, ETH_EAP_FRAME* frame) {
     int i;
+#ifdef _WIN32
+    if (win32_reconnect_pending()) return FAILURE;
+#endif
 
     if (PRIV->state == state) {
         PROG_CONFIG* _cfg = get_program_config();
         PRIV->state_last_count++;
         if (PRIV->state_last_count == _cfg->max_retries) {
+#ifdef _WIN32
+            PR_WARN("认证状态 %d 重试 %d 次仍无响应，将重建网络会话", PRIV->state, _cfg->max_retries);
+            win32_request_reconnect();
+            return FAILURE;
+#else
             PR_ERR("在 %d 状态已经停留了 %d 次，达到指定次数，正在退出……", PRIV->state, _cfg->max_retries);
             exit(EXIT_FAILURE);
+#endif
         }
     } else {
         /*
@@ -363,6 +376,11 @@ RESULT switch_to_state(EAP_STATE state, ETH_EAP_FRAME* frame) {
     for (i = 0; i < sizeof(g_transition_table) / sizeof(STATE_TRANSITION); ++i) {
         if (state == g_transition_table[i].state) {
             if (IS_FAIL(g_transition_table[i].trans_func(frame))) {
+#ifdef _WIN32
+                /* Transport failure is recovered by the main loop. Plugin
+                 * preparation/configuration failures remain fatal. */
+                if (win32_reconnect_pending()) return FAILURE;
+#endif
                 exit(EXIT_FAILURE);
             } else {
                 PRIV->state = state;

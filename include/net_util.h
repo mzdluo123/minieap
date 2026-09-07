@@ -18,6 +18,12 @@ typedef struct _ip_addr {
  */
 RESULT obtain_iface_mac(const char* ifname, uint8_t* address_buf);
 
+#ifdef _WIN32
+/* Resolve a present, media-connected adapter to its canonical Npcap name.
+ * Does not require an IP address or completed 802.1X authentication. */
+RESULT win32_prepare_iface(const char* ifname, char* pcap_name, int buflen);
+#endif
+
 /*
  * Get all IPv4v6 address on the interface. List content would be
  * struct IP_ADDR.

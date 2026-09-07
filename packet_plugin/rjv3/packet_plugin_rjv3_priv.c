@@ -487,6 +487,7 @@ RESULT rjv3_process_result_prop(ETH_EAP_FRAME* frame) {
         _msg = (RJ_PROP*)lookup_data(_srv_msg, NULL, rjv3_is_echokey_prop);
         if (_msg == NULL) {
             PR_ERR("无法找到 echo key 的位置，将不能进行心跳");
+            destroy_rjv3_prop_list(&_srv_msg);
             return FAILURE;
         } else {
             uint32_t _echokey = 0;
@@ -506,6 +507,7 @@ RESULT rjv3_process_result_prop(ETH_EAP_FRAME* frame) {
 void rjv3_start_secondary_auth(void* vthis) {
     PACKET_PLUGIN* this = (PACKET_PLUGIN*)vthis;
     DHCP_LEASE _tmp_dhcp_lease = {0};
+    PRIV->secondary_auth_alarm_id = -1;
 
     /* Try to fill out lease info to determine whether DHCP finished.
      * The addresses in lease info are not used here.
@@ -515,11 +517,11 @@ void rjv3_start_secondary_auth(void* vthis) {
         if (PRIV->dhcp_count > PRIV->max_dhcp_count) {
             rjv3_process_result_prop(PRIV->duplicated_packet); // Loads of texts
             free_frame(&PRIV->duplicated_packet); // Duplicated in process_success
-            schedule_alarm(1, rjv3_send_keepalive_timed, this);
+            rjv3_start_keepalive(this);
             PR_ERR("无法获取 IPv4 地址等信息，将不会进行第二次认证而直接开始心跳");
         } else {
             PR_WARN("DHCP 可能尚未完成，将继续等待……");
-            schedule_alarm(5, rjv3_start_secondary_auth, this);
+            PRIV->secondary_auth_alarm_id = schedule_alarm(5, rjv3_start_secondary_auth, this);
         }
         return;
     } else {

@@ -3,13 +3,15 @@
 #include "logging.h"
 #include "net_util.h"
 #include "packet_plugin_rjv3_priv.h"
+#include "packet_plugin_rjv3_keepalive.h"
 #include "sched_alarm.h"
 #include "misc.h"
 #include "packet_util.h"
+#include "win32.h"
 
 #include <stdlib.h>
 
-static int g_keepalive_alarm_id;
+static int g_keepalive_alarm_id = -1;
 static uint32_t g_echokey;
 static uint32_t g_echono;
 static uint8_t g_dest_mac[6];
@@ -28,12 +30,17 @@ void rjv3_set_keepalive_dest_mac(uint8_t* mac) {
 }
 
 void rjv3_keepalive_reset() {
-    unschedule_alarm(g_keepalive_alarm_id);
+    if (g_keepalive_alarm_id >= 0) {
+        unschedule_alarm(g_keepalive_alarm_id);
+        g_keepalive_alarm_id = -1;
+    }
     g_echokey = 0;
     g_echono = 0;
+    memset(g_dest_mac, 0, sizeof(g_dest_mac));
 }
 
 static RESULT send_echo_frame(struct _packet_plugin* this, uint8_t* content, int len) {
+    ETH_EAP_FRAME frame = {0};
     PACKET_BUILDER* _builder = packet_builder_get();
     if (_builder == NULL) {
         PR_ERR("包生成器未初始化");
@@ -60,7 +67,6 @@ static RESULT send_echo_frame(struct _packet_plugin* this, uint8_t* content, int
     _builder->set_eth_field(_builder, FIELD_ETH_PROTO, _proto);
     _builder->set_eap_fields(_builder, EAPOL_RJ_PROPRIETARY_KEEPALIVE, 0, 0, 0, NULL);
 
-    ETH_EAP_FRAME frame;
     if ((frame.content = (uint8_t*)malloc(100)) == NULL) {
         PR_ERR("无法为 Keep-Alive 报文分配内存空间");
         goto fail;
@@ -108,10 +114,24 @@ RESULT rjv3_send_new_keepalive_frame(struct _packet_plugin* this) {
     return send_echo_frame(this, _template, sizeof(_template));
 }
 
+void rjv3_start_keepalive(struct _packet_plugin* this) {
+    if (g_keepalive_alarm_id >= 0) {
+        unschedule_alarm(g_keepalive_alarm_id);
+    }
+    g_keepalive_alarm_id = schedule_alarm(1, rjv3_send_keepalive_timed, this);
+}
+
 void rjv3_send_keepalive_timed(void* vthis) {
     PACKET_PLUGIN* this = (PACKET_PLUGIN*)vthis;
+    g_keepalive_alarm_id = -1;
     if (IS_FAIL(rjv3_send_new_keepalive_frame(this))) {
         PR_ERR("心跳包发送失败");
+#ifdef _WIN32
+        win32_request_reconnect();
+        return;
+#else
+        exit(EXIT_FAILURE);
+#endif
     }
     g_keepalive_alarm_id = schedule_alarm(PRIV->heartbeat_interval, rjv3_send_keepalive_timed, vthis);
 }

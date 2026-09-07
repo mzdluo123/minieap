@@ -125,7 +125,8 @@ typedef struct _packet_plugin_rjv3_priv {
     // Internal state variables
     int succ_count;
     int dhcp_count; // Used in double auth
-    ETH_EAP_FRAME* last_recv_packet;
+    int secondary_auth_alarm_id;
+    ETH_EAP_FRAME* last_recv_packet; // Borrowed from the EAP state machine
     ETH_EAP_FRAME* duplicated_packet; // Used in double auth
 } rjv3_priv;
 
