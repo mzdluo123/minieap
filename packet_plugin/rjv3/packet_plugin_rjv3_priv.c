@@ -64,13 +64,15 @@ static void rjv3_set_ipv6_addr(uint8_t* ll_slaac, uint8_t* ll_temp, uint8_t* glo
     if (_if_impl == NULL) return;
 
     char ifname[IFNAMSIZ] = {0};
-    _if_impl->get_ifname(_if_impl, ifname, IFNAMSIZ);
+    if (IS_FAIL(_if_impl->get_ifname(_if_impl, ifname, IFNAMSIZ))) return;
 
-    obtain_iface_ip_mask(ifname, &_ip_list);
-    _ip_curr = _ip_list;
+    if (IS_FAIL(obtain_iface_ip_mask(ifname, &_ip_list))) {
+        free_ip_list(&_ip_list);
+        return;
+    }
 
 #define IP_ELEM ((IP_ADDR*)(_ip_curr->content))
-    do {
+    for (_ip_curr = _ip_list; _ip_curr != NULL; _ip_curr = _ip_curr->next) {
         if (IP_ELEM->family == AF_INET6) {
             if ((IP_ELEM->ip[0] & 0xf0) == 0x20) { // 2xxx:: Global scope (ROUGH)
                 memmove(global, IP_ELEM->ip, 16);
@@ -84,8 +86,8 @@ static void rjv3_set_ipv6_addr(uint8_t* ll_slaac, uint8_t* ll_temp, uint8_t* glo
                 }
             }
         }
-    } while ((_ip_curr = _ip_curr->next));
-    list_destroy(&_ip_list, TRUE);
+    }
+    free_ip_list(&_ip_list);
 }
 
 static void rjv3_set_v3_hash(uint8_t* hash_buf, ETH_EAP_FRAME* request) {
@@ -296,13 +298,13 @@ static int rjv3_append_common_fields(PACKET_PLUGIN* this, LIST_ELEMENT** list, i
 
     rjv3_set_local_mac(_local_mac);
 
-    rjv3_set_pwd_hash(_pwd_hash, PRIV->last_recv_packet);
+    rjv3_set_pwd_hash(_pwd_hash, PRIV->md5_request);
 
     rjv3_set_secondary_dns(_sec_dns, PRIV->fake_dns2);
 
     rjv3_set_ipv6_addr(_ll_ipv6, _ll_ipv6_tmp, _glb_ipv6);
 
-    rjv3_set_v3_hash(_v3_hash, PRIV->last_recv_packet);
+    rjv3_set_v3_hash(_v3_hash, PRIV->md5_request);
 
     rjv3_set_service_name(_service, PRIV->service_name);
 

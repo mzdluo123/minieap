@@ -144,11 +144,19 @@ RESULT libpcap_start_capture(struct _if_impl* this) {
         return FAILURE;
     }
     while (!win32_reconnect_pending()) {
+        ULONGLONG wait_started = GetTickCount64();
         DWORD wait = WaitForSingleObject(ready, 100);
         if (wait == WAIT_FAILED) {
             PR_ERR("等待 Npcap 捕获事件失败 (%lu)", GetLastError());
             return FAILURE;
         }
+        /* Modern Standby may freeze this process without a system suspend.
+         * Measure only the bounded wait, not DHCP scripts in packet callbacks. */
+        if (GetTickCount64() - wait_started > 30000) {
+            PR_WARN("捕获等待期间进程长时间暂停，将重建网络会话");
+            win32_request_reconnect();
+        }
+        win32_poll_network();
         if (win32_reconnect_pending()) break;
         /* Bound each batch so a busy interface cannot starve timers/recovery. */
         int r = pcap_dispatch(PRIV->pcapdev, 32, libpcap_packet_handler, (uint8_t*)this);
@@ -157,6 +165,7 @@ RESULT libpcap_start_capture(struct _if_impl* this) {
             return FAILURE;
         }
         if (r == PCAP_ERROR_BREAK) return SUCCESS;
+        win32_poll_network();
         if (!win32_reconnect_pending()) sched_alarm_poll();
     }
     return SUCCESS;

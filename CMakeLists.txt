@@ -215,7 +215,9 @@ if(MINIEAP_BUILD_TESTS)
     list(REMOVE_ITEM _test_sources
         minieap.c eap_state_machine.c util/win32.c util/sched_alarm.c
         if_impl/libpcap/if_impl_libpcap.c
-        "${CMAKE_CURRENT_SOURCE_DIR}/packet_plugin/rjv3/packet_plugin_rjv3_keepalive.c")
+        "${CMAKE_CURRENT_SOURCE_DIR}/packet_plugin/rjv3/packet_plugin_rjv3_keepalive.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/packet_plugin/rjv3/packet_plugin_rjv3.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/packet_plugin/rjv3/packet_plugin_rjv3_priv.c")
     add_executable(windows_recovery tests/windows_recovery.c ${_test_sources})
     foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_DIRECTORIES LINK_LIBRARIES)
         get_target_property(_value minieap ${_property})

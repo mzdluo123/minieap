@@ -175,7 +175,7 @@ static RESULT run_windows_network(void) {
         PR_ERR("网络驱动不支持释放捕获资源");
         return FAILURE;
     }
-    if (IS_FAIL(win32_power_init())) return FAILURE;
+    if (IS_FAIL(win32_recovery_init())) return FAILURE;
 
     PR_INFO("========================");
     PR_INFO("MiniEAP " VERSION "已启动");
@@ -211,7 +211,7 @@ static RESULT run_windows_network(void) {
 
 static void exit_handler(void) {
 #ifdef _WIN32
-    win32_power_destroy();
+    win32_recovery_destroy();
 #endif
     free_if_impl();
     packet_plugin_destroy();

@@ -16,10 +16,12 @@ RESULT append_to_frame(ETH_EAP_FRAME* frame, const uint8_t* data, int len) {
 
 ETH_EAP_FRAME* frame_duplicate(const ETH_EAP_FRAME* frame) {
     ETH_EAP_FRAME* _frame = (ETH_EAP_FRAME*)malloc(sizeof(ETH_EAP_FRAME));
+    if (_frame == NULL) return NULL;
     _frame->actual_len = frame->actual_len;
     _frame->buffer_len = frame->buffer_len;
     _frame->content = (uint8_t*)malloc(_frame->actual_len);
     if (_frame->content == NULL) {
+        free(_frame);
         return NULL;
     }
     memmove(_frame->content, frame->content, _frame->actual_len);

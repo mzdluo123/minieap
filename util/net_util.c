@@ -6,6 +6,7 @@
 #ifdef _WIN32
 #include "oscompat.h"
 #include "if_impl.h"
+#include "win32.h"
 #include <iphlpapi.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -122,6 +123,7 @@ RESULT win32_prepare_iface(const char* ifname, char* pcap_name, int buflen) {
     if (!head) return FAILURE;
     a = win_find_adapter(head, ifname);
     if (a && a->AdapterName && a->PhysicalAddressLength == 6) {
+        win32_set_interface_luid(a->Luid.Value);
         row.InterfaceLuid = a->Luid;
         /* OperStatus can be Dormant while 802.1X has not authenticated.
          * Waiting for OperStatusUp or an IP here would deadlock authentication. */

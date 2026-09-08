@@ -117,13 +117,16 @@ RESULT rjv3_send_new_keepalive_frame(struct _packet_plugin* this) {
 void rjv3_start_keepalive(struct _packet_plugin* this) {
     if (g_keepalive_alarm_id >= 0) {
         unschedule_alarm(g_keepalive_alarm_id);
+        g_keepalive_alarm_id = -1;
     }
+    if (PRIV->heartbeat_interval <= 0) return;
     g_keepalive_alarm_id = schedule_alarm(1, rjv3_send_keepalive_timed, this);
 }
 
 void rjv3_send_keepalive_timed(void* vthis) {
     PACKET_PLUGIN* this = (PACKET_PLUGIN*)vthis;
     g_keepalive_alarm_id = -1;
+    if (PRIV->heartbeat_interval <= 0) return;
     if (IS_FAIL(rjv3_send_new_keepalive_frame(this))) {
         PR_ERR("心跳包发送失败");
 #ifdef _WIN32
@@ -133,5 +136,7 @@ void rjv3_send_keepalive_timed(void* vthis) {
         exit(EXIT_FAILURE);
 #endif
     }
-    g_keepalive_alarm_id = schedule_alarm(PRIV->heartbeat_interval, rjv3_send_keepalive_timed, vthis);
+    if (PRIV->heartbeat_interval > 0) {
+        g_keepalive_alarm_id = schedule_alarm(PRIV->heartbeat_interval, rjv3_send_keepalive_timed, vthis);
+    }
 }

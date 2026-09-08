@@ -27,7 +27,7 @@ static void rjv3_reset_session(PACKET_PLUGIN* this) {
     free_frame(&PRIV->duplicated_packet);
     PRIV->dhcp_count = 0;
     PRIV->succ_count = 0;
-    PRIV->last_recv_packet = NULL;
+    free_frame(&PRIV->md5_request);
 }
 
 void rjv3_destroy(struct _packet_plugin* this) {
@@ -144,7 +144,12 @@ static RESULT rjv3_parse_one_opt(struct _packet_plugin* this, const char* option
 
 #define ISOPT(arg_name) (strcmp(option, arg_name) == 0)
     if (ISOPT("heartbeat")) {
-        PRIV->heartbeat_interval = atoi(argument);
+        int interval = atoi(argument);
+        if (interval < 0) {
+            PR_ERR("心跳间隔不能为负数");
+            return FAILURE;
+        }
+        PRIV->heartbeat_interval = interval;
         if (PRIV->heartbeat_interval == 0) {
             PR_WARN("心跳间隔指定为 0，这将会禁止心跳！请确认参数格式正确。");
         }
@@ -217,6 +222,10 @@ RESULT rjv3_process_cmdline_opts(struct _packet_plugin* this, int argc, char* ar
 }
 
 RESULT rjv3_prepare_frame(struct _packet_plugin* this, ETH_EAP_FRAME* frame) {
+    if (frame->header->eapol_hdr.type[0] == EAPOL_START ||
+            frame->header->eapol_hdr.type[0] == EAPOL_LOGOFF) {
+        free_frame(&PRIV->md5_request);
+    }
     return rjv3_append_priv(this, frame);
 }
 
@@ -235,11 +244,7 @@ static RESULT rjv3_process_success(struct _packet_plugin* this, ETH_EAP_FRAME* f
              */
             PR_INFO("首次认证成功，正在执行 DHCP 脚本以准备第二次认证");
 
-            /*
-             * PRIV->last_recv_packet == `frame`, but `frame` will be freed
-             * once the state transition is finished. We need to keep it
-             * in case DHCP fails and we need to start heartbeating.
-             */
+            /* Own the success frame until DHCP completes or falls back to keepalive. */
             if (PRIV->duplicated_packet != NULL) {
                 free_frame(&PRIV->duplicated_packet);
             }
@@ -272,8 +277,10 @@ static RESULT rjv3_process_success(struct _packet_plugin* this, ETH_EAP_FRAME* f
         return FAILURE;
     }
 
-    PR_INFO("正定时发送 Keep-Alive 报文以保持在线……");
-    rjv3_start_keepalive(this);
+    if (PRIV->heartbeat_interval > 0) {
+        PR_INFO("正定时发送 Keep-Alive 报文以保持在线……");
+        rjv3_start_keepalive(this);
+    }
     return SUCCESS;
 }
 
@@ -284,7 +291,17 @@ static RESULT rjv3_process_failure(PACKET_PLUGIN* this, ETH_EAP_FRAME* frame) {
 }
 
 RESULT rjv3_on_frame_received(struct _packet_plugin* this, ETH_EAP_FRAME* frame) {
-    PRIV->last_recv_packet = frame;
+    free_frame(&PRIV->md5_request);
+    if (frame->header->eapol_hdr.type[0] == EAP_PACKET &&
+            frame->header->eap_hdr.code[0] == EAP_REQUEST &&
+            frame->header->eap_hdr.type[0] == MD5_CHALLENGE) {
+        /* The EAP state machine can release its copy before a later send. */
+        PRIV->md5_request = frame_duplicate(frame);
+        if (PRIV->md5_request == NULL) {
+            PR_ERR("无法保存 MD5 请求报文");
+            return FAILURE;
+        }
+    }
 
     if (frame->header->eapol_hdr.type[0] == EAP_PACKET) {
         if (frame->header->eap_hdr.code[0] == EAP_SUCCESS) {
