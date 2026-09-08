@@ -95,5 +95,8 @@ RESULT switch_to_state(EAP_STATE state, ETH_EAP_FRAME* frame);
  */
 void eap_state_machine_recv_handler(ETH_EAP_FRAME* frame);
 
+EAP_STATE eap_state_machine_get_state(void);
+void eap_state_machine_restart_from_offline(void);
+
 #endif
 

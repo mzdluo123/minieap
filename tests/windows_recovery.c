@@ -6,6 +6,7 @@
 #include "net_util.h"
 #include "win32.h"
 #include "packet_plugin_rjv3_priv.h"
+#include "internet_check.h"
 #include "packet_plugin_rjv3_keepalive.h"
 #include <pcap.h>
 #include <iphlpapi.h>
@@ -639,6 +640,144 @@ static void test_md5_request_lifetime(void) {
     destroy_fixture();
     puts("PASS retransmitted MD5 response survives release of caller-owned request");
 }
+
+static RESULT http_fail(int* s) { (void)s; return FAILURE; }
+static RESULT http_204(int* s) { *s = 204; return SUCCESS; }
+static RESULT http_200(int* s) { *s = 200; return SUCCESS; }
+static RESULT http_skip(int* s) { *s = 0; return SUCCESS; }
+
+static void test_internet_check(void) {
+    PROG_CONFIG* cfg;
+    char host[256], path[256];
+    int port = 0;
+
+    assert(internet_check_parse_url("http://connect.rom.miui.com/generate_204",
+        host, (int)sizeof(host), &port, path, (int)sizeof(path)) == SUCCESS);
+    assert(strcmp(host, "connect.rom.miui.com") == 0);
+    assert(port == 80);
+    assert(strcmp(path, "/generate_204") == 0);
+    assert(internet_check_parse_url("https://example.com/x",
+        host, (int)sizeof(host), &port, path, (int)sizeof(path)) == FAILURE);
+    assert(internet_check_parse_url("http://127.0.0.1:8080/foo",
+        host, (int)sizeof(host), &port, path, (int)sizeof(path)) == SUCCESS);
+    assert(strcmp(host, "127.0.0.1") == 0);
+    assert(port == 8080);
+    assert(strcmp(path, "/foo") == 0);
+
+    init_rjv3_session("0");
+    cfg = get_program_config();
+    cfg->internet_check = 1;
+    cfg->internet_check_interval = 1;
+    cfg->internet_check_max_fail = 2;
+    cfg->internet_check_timeout = 1;
+    internet_check_set_http_fn(http_fail);
+    assert(switch_to_state(EAP_STATE_START_SENT, NULL) == SUCCESS);
+    deliver_success();
+    assert(f.starts == 1);
+    f.now += 1000;
+    sched_alarm_poll();
+    assert(f.starts == 1);
+    f.now += 1000;
+    sched_alarm_poll();
+    assert(f.starts == 2);
+    internet_check_set_http_fn(NULL);
+    destroy_fixture();
+
+    init_rjv3_session("0");
+    cfg = get_program_config();
+    cfg->internet_check = 1;
+    cfg->internet_check_interval = 1;
+    cfg->internet_check_max_fail = 2;
+    cfg->internet_check_timeout = 1;
+    internet_check_set_http_fn(http_204);
+    assert(switch_to_state(EAP_STATE_START_SENT, NULL) == SUCCESS);
+    deliver_success();
+    f.now += 1000;
+    sched_alarm_poll();
+    f.now += 1000;
+    sched_alarm_poll();
+    assert(f.starts == 1);
+    internet_check_set_http_fn(NULL);
+    destroy_fixture();
+
+    init_rjv3_session("0");
+    cfg = get_program_config();
+    cfg->internet_check = 1;
+    cfg->internet_check_interval = 1;
+    cfg->internet_check_max_fail = 1;
+    cfg->internet_check_timeout = 1;
+    internet_check_set_http_fn(http_200);
+    assert(switch_to_state(EAP_STATE_START_SENT, NULL) == SUCCESS);
+    deliver_success();
+    f.now += 1000;
+    sched_alarm_poll();
+    assert(f.starts == 2);
+    internet_check_set_http_fn(NULL);
+    destroy_fixture();
+
+    init_rjv3_session("0");
+    cfg = get_program_config();
+    cfg->internet_check = 1;
+    cfg->internet_check_interval = 1;
+    cfg->internet_check_max_fail = 1;
+    cfg->internet_check_timeout = 1;
+    cfg->restart_on_logoff = 0;
+    internet_check_set_http_fn(http_fail);
+    assert(switch_to_state(EAP_STATE_START_SENT, NULL) == SUCCESS);
+    deliver_success();
+    f.now += 1000;
+    sched_alarm_poll();
+    assert(f.starts == 1);
+    f.now += 1000;
+    sched_alarm_poll();
+    assert(f.starts == 1);
+    internet_check_set_http_fn(NULL);
+    destroy_fixture();
+
+    init_rjv3_session("0");
+    cfg = get_program_config();
+    cfg->internet_check = 1;
+    cfg->internet_check_interval = 1;
+    cfg->internet_check_max_fail = 1;
+    cfg->internet_check_timeout = 1;
+    internet_check_set_http_fn(http_skip);
+    assert(switch_to_state(EAP_STATE_START_SENT, NULL) == SUCCESS);
+    deliver_success();
+    f.now += 1000;
+    sched_alarm_poll();
+    f.now += 1000;
+    sched_alarm_poll();
+    assert(f.starts == 1);
+    internet_check_set_http_fn(NULL);
+    destroy_fixture();
+
+    init_rjv3_session("0");
+    assert(switch_to_state(EAP_STATE_START_SENT, NULL) == SUCCESS);
+    deliver_success();
+    f.now += 3600000;
+    sched_alarm_poll();
+    assert(f.starts == 1);
+    destroy_fixture();
+
+    init_rjv3_session("0");
+    cfg = get_program_config();
+    cfg->internet_check = 1;
+    cfg->internet_check_interval = 1;
+    cfg->internet_check_max_fail = 1;
+    cfg->internet_check_timeout = 1;
+    internet_check_set_http_fn(http_fail);
+    assert(switch_to_state(EAP_STATE_START_SENT, NULL) == SUCCESS);
+    deliver_success();
+    win32_request_reconnect();
+    f.now += 1000;
+    sched_alarm_poll();
+    assert(f.starts == 1);
+    internet_check_set_http_fn(NULL);
+    destroy_fixture();
+
+    puts("PASS internet check URL parser, reauth, skip, default-off and reconnect");
+}
+
 static ULONG CALLBACK native_probe(void* context, ULONG type, void* setting) {
     (void)context; (void)type; (void)setting;
     return ERROR_SUCCESS;
@@ -668,6 +807,7 @@ int main(void) {
     test_dhcp_session();
     test_zero_heartbeat();
     test_md5_request_lifetime();
+    test_internet_check();
     assert(PowerRegisterSuspendResumeNotification(DEVICE_NOTIFY_CALLBACK, &params, &registration) == ERROR_SUCCESS);
     assert(PowerUnregisterSuspendResumeNotification(registration) == ERROR_SUCCESS);
     assert(NotifyIpInterfaceChange(

@@ -160,6 +160,21 @@ typedef struct _prog_config {
      */
     KILL_TYPE kill_type;
     #define DEFAULT_KILL_TYPE KILL_NONE
+
+    /*
+     * Opt-in HTTP generate_204 reachability probe after 802.1X SUCCESS.
+     */
+    int internet_check;
+    #define DEFAULT_INTERNET_CHECK FALSE
+    char* internet_check_url;
+    #define DEFAULT_INTERNET_CHECK_URL "http://connect.rom.miui.com/generate_204"
+    #define INTERNET_CHECK_URL_MAX 256
+    int internet_check_interval;
+    #define DEFAULT_INTERNET_CHECK_INTERVAL 60
+    int internet_check_timeout;
+    #define DEFAULT_INTERNET_CHECK_TIMEOUT 3
+    int internet_check_max_fail;
+    #define DEFAULT_INTERNET_CHECK_MAX_FAIL 3
 } PROG_CONFIG;
 
 /*

@@ -12,6 +12,8 @@
 #include "if_impl.h"
 #include "packet_plugin.h"
 #include "conf_parser.h"
+#include "internet_check.h"
+
 
 static EAP_CONFIG g_eap_config;
 static PROXY_CONFIG g_proxy_config;
@@ -54,6 +56,11 @@ void load_default_params() {
     PCFG.save_now = DEFAULT_SAVE_NOW;
     PCFG.auth_round = DEFAULT_AUTH_ROUND;
     PCFG.kill_type = DEFAULT_KILL_TYPE;
+    PCFG.internet_check = DEFAULT_INTERNET_CHECK;
+    PCFG.internet_check_url = strdup(DEFAULT_INTERNET_CHECK_URL);
+    PCFG.internet_check_interval = DEFAULT_INTERNET_CHECK_INTERVAL;
+    PCFG.internet_check_timeout = DEFAULT_INTERNET_CHECK_TIMEOUT;
+    PCFG.internet_check_max_fail = DEFAULT_INTERNET_CHECK_MAX_FAIL;
 
     configure_log_by_daemon_type(DEFAULT_DAEMON_TYPE);
 }
@@ -113,6 +120,11 @@ static void print_cmdline_help() {
         "\t--pkt-plugin <...>\t启用此名称的数据包修改器，可启用多次、多个 [默认无]\n"
         "\t--module <...>\t\t同上\n"
             "\t\t\t\t当命令行选项中存在 --module 或 --pkt-plugin 时，配置文件中的所有 module= 行都将被忽略\n"
+        "\t--internet-check\t\t认证成功后用 HTTP generate_204 检测能否上网，失败则重新认证 [默认关]\n"
+        "\t--internet-check-url <...>\t检测 URL [默认 http://connect.rom.miui.com/generate_204]\n"
+        "\t--internet-check-interval <num>\t检测间隔秒数 [默认60]\n"
+        "\t--internet-check-timeout <num>\t单次 HTTP 超时秒数 [默认3]\n"
+        "\t--internet-check-max-fail <num>\t连续失败多少次后重新认证 [默认3]\n"
     );
 
     print_if_impl_list();
@@ -171,6 +183,34 @@ static void parse_one_opt(const char* option, const char* argument) {
         COPY_N_ARG_TO(g_prog_config.pidfile, MAX_PATH);
     } else if (ISOPT("log-file")) {
         COPY_N_ARG_TO(g_prog_config.logfile, MAX_PATH);
+    } else if (ISOPT("internet-check")) {
+        if (argument == NULL)
+            g_prog_config.internet_check = 1;
+        else
+            g_prog_config.internet_check = atoi(argument) ? 1 : 0;
+    } else if (ISOPT("internet-check-url")) {
+        COPY_N_ARG_TO(g_prog_config.internet_check_url, INTERNET_CHECK_URL_MAX);
+    } else if (ISOPT("internet-check-interval")) {
+        int v = atoi(argument);
+        if (v <= 0) {
+            PR_ERR("%s", option);
+            return;
+        }
+        g_prog_config.internet_check_interval = v;
+    } else if (ISOPT("internet-check-timeout")) {
+        int v = atoi(argument);
+        if (v <= 0) {
+            PR_ERR("%s", option);
+            return;
+        }
+        g_prog_config.internet_check_timeout = v;
+    } else if (ISOPT("internet-check-max-fail")) {
+        int v = atoi(argument);
+        if (v <= 0) {
+            PR_ERR("%s", option);
+            return;
+        }
+        g_prog_config.internet_check_max_fail = v;
     }
 }
 
@@ -199,6 +239,11 @@ RESULT parse_cmdline_opts(int argc, char* argv[]) {
 	    { "pkt-plugin", required_argument, NULL, 0},
 	    { "module", required_argument, NULL, 0},
 	    { "log-file", required_argument, NULL, 0},
+	    { "internet-check", no_argument, NULL, 0 },
+	    { "internet-check-url", required_argument, NULL, 0 },
+	    { "internet-check-interval", required_argument, NULL, 0 },
+	    { "internet-check-timeout", required_argument, NULL, 0 },
+	    { "internet-check-max-fail", required_argument, NULL, 0 },
 	    { NULL, no_argument, NULL, 0 }
     };
 
@@ -272,6 +317,11 @@ RESULT save_config_file() {
     conf_parser_add_value("auth-round", my_itoa(g_prog_config.auth_round, itoa_buf, 10));
     conf_parser_add_value("pid-file", g_prog_config.pidfile);
     conf_parser_add_value("log-file", g_prog_config.logfile);
+    conf_parser_add_value("internet-check", g_prog_config.internet_check ? "1" : "0");
+    conf_parser_add_value("internet-check-url", g_prog_config.internet_check_url);
+    conf_parser_add_value("internet-check-interval", my_itoa(g_prog_config.internet_check_interval, itoa_buf, 10));
+    conf_parser_add_value("internet-check-timeout", my_itoa(g_prog_config.internet_check_timeout, itoa_buf, 10));
+    conf_parser_add_value("internet-check-max-fail", my_itoa(g_prog_config.internet_check_max_fail, itoa_buf, 10));
     packet_plugin_save_config();
     return conf_parser_save_file();
 }
@@ -295,6 +345,16 @@ RESULT validate_params() {
         if_impl_print_pcap_devices();
         return FAILURE;
     }
+    if (g_prog_config.internet_check) {
+        char host[INTERNET_CHECK_URL_MAX];
+        char path[INTERNET_CHECK_URL_MAX];
+        int port;
+        if (IS_FAIL(internet_check_parse_url(g_prog_config.internet_check_url,
+                host, (int)sizeof(host), &port, path, (int)sizeof(path)))) {
+            PR_ERR("internet-check-url 无效，仅支持 http://host[:port][/path]");
+            return FAILURE;
+        }
+    }
     return SUCCESS;
 }
 
@@ -308,6 +368,7 @@ void free_config() {
     chk_free((void**)&g_prog_config.logfile);
     chk_free((void**)&g_prog_config.conffile);
     chk_free((void**)&g_prog_config.if_impl);
+    chk_free((void**)&g_prog_config.internet_check_url);
     list_destroy(&g_prog_config.packet_plugin_list, FALSE);
 
     chk_free((void**)&g_eap_config.username);

@@ -55,6 +55,7 @@ set(MINIEAP_SOURCES
     util/logging.c
     util/misc.c
     util/net_util.c
+    util/internet_check.c
     util/packet_util.c
     util/pid_lock.c
     util/sched_alarm.c

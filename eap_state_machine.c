@@ -11,6 +11,8 @@
 #include "net_util.h"
 #include "sched_alarm.h"
 #include "win32.h"
+#include "internet_check.h"
+
 
 #include <stdlib.h>
 
@@ -62,6 +64,7 @@ static void disable_state_watchdog();
 
 static void eap_state_machine_reset() {
     disable_state_watchdog();
+    internet_check_stop();
     free_frame(&PRIV->last_recv_frame);
     PRIV->state_last_count = 0;
     PRIV->state = EAP_STATE_UNKNOWN; // If called by a transition func, this won't take effect
@@ -187,6 +190,7 @@ static RESULT state_mach_process_success(ETH_EAP_FRAME* frame) {
     if (PRIV->auth_round == _cfg->auth_round) {
         PR_INFO("认证成功");
         eap_state_machine_reset(); // Prepare for further use (e.g. re-auth after offline)
+        internet_check_start();
         return SUCCESS;
     } else {
         PR_INFO("第 %d 次认证成功，正在执行下一次认证", PRIV->auth_round);
@@ -200,6 +204,15 @@ static RESULT state_mach_process_success(ETH_EAP_FRAME* frame) {
 static void restart_auth(void* unused) {
     eap_state_machine_reset();
     switch_to_state(EAP_STATE_START_SENT, NULL);
+}
+
+EAP_STATE eap_state_machine_get_state(void) {
+    return PRIV->state;
+}
+
+void eap_state_machine_restart_from_offline(void) {
+    packet_plugin_reset_session();
+    restart_auth(NULL);
 }
 
 static RESULT state_mach_process_failure(ETH_EAP_FRAME* frame) {
@@ -333,6 +346,7 @@ static RESULT trans_to_success(ETH_EAP_FRAME* frame) {
 
 static RESULT trans_to_failure(ETH_EAP_FRAME* frame) {
     disable_state_watchdog(); // Same as above.
+    internet_check_stop();
     return state_mach_process_failure(frame);
 }
 
